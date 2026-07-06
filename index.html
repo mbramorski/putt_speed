@@ -140,12 +140,13 @@
     #align-guide { position:absolute; inset:0; pointer-events:none; display:none; z-index:15; }
     #align-guide.on { display:block; }
     #align-guide .v-line { position:absolute; top:0; bottom:0; left:50%; width:1px; background:rgba(255,255,255,.35); }
-    #align-guide .h-line { position:absolute; left:0; right:0; bottom:14%; height:1px; background:rgba(255,218,0,.55); }
+    #align-guide .zone-line { position:absolute; top:0; bottom:0; width:1px; background:rgba(255,218,0,.55); }
     #align-guide .align-label {
-      position:absolute; left:50%; bottom:calc(14% + 10px); transform:translateX(-50%);
-      font-size:11px; letter-spacing:.08em; text-transform:uppercase;
-      color:rgba(255,218,0,.85); background:rgba(0,0,0,.5);
-      padding:5px 12px; border-radius:20px; white-space:nowrap;
+      position:absolute; left:50%; top:14%; transform:translateX(-50%);
+      font-size:11px; letter-spacing:.06em; text-transform:uppercase;
+      color:rgba(255,218,0,.85); background:rgba(0,0,0,.55);
+      padding:8px 16px; border-radius:12px; text-align:center; line-height:1.5;
+      max-width:78vw;
     }
 
     #error-msg {
@@ -176,8 +177,9 @@
 
 <div id="align-guide">
   <div class="v-line"></div>
-  <div class="h-line"></div>
-  <div class="align-label">Keep putt path parallel to this line</div>
+  <div class="zone-line" style="left:30%"></div>
+  <div class="zone-line" style="left:70%"></div>
+  <div class="align-label">Keep the ball's up/down path inside these lines — the outer edges are the widest, most distorted part of the lens</div>
 </div>
 
 <div id="overlay">
