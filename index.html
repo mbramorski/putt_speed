@@ -17,18 +17,65 @@
     #video {
       position:absolute; inset:0;
       width:100%; height:100%;
-      object-fit:cover; opacity:0.6;
+      object-fit:cover; opacity:0.65;
     }
     #canvas { display:none; }
 
+    /* ── tap-to-identify overlay ── */
+    #tap-screen {
+      position:absolute; inset:0; z-index:20;
+      display:flex; flex-direction:column;
+      align-items:center; justify-content:center;
+      gap:20px;
+      background:rgba(0,0,0,0.55);
+      cursor:crosshair;
+    }
+    #tap-screen.hidden { display:none; }
+    .tap-icon {
+      width:64px; height:64px;
+      border:2.5px solid rgba(255,218,0,0.85);
+      border-radius:50%;
+      display:flex; align-items:center; justify-content:center;
+    }
+    .tap-icon::after {
+      content:''; width:8px; height:8px;
+      background:rgba(255,218,0,0.9); border-radius:50%;
+    }
+    .tap-title {
+      font-size:20px; font-weight:600;
+      color:#fff; letter-spacing:-.01em;
+    }
+    .tap-sub {
+      font-size:13px; color:rgba(255,255,255,0.45);
+      text-align:center; max-width:240px; line-height:1.6;
+    }
+
+    /* ── crosshair cursor follows finger ── */
+    #cursor {
+      position:absolute;
+      width:48px; height:48px;
+      border:2px solid rgba(255,218,0,0.8);
+      border-radius:50%;
+      transform:translate(-50%,-50%);
+      pointer-events:none;
+      display:none;
+    }
+    #cursor::after {
+      content:''; position:absolute;
+      top:50%; left:50%; transform:translate(-50%,-50%);
+      width:6px; height:6px;
+      background:rgba(255,218,0,.9); border-radius:50%;
+    }
+
+    /* ── main overlay ── */
     #overlay {
       position:absolute; inset:0;
       display:flex; flex-direction:column;
       align-items:center; justify-content:space-between;
       padding: max(env(safe-area-inset-top),32px) 24px max(env(safe-area-inset-bottom),28px);
+      pointer-events:none;
     }
 
-    /* status */
     #status-wrap { display:flex; flex-direction:column; align-items:center; gap:8px; }
     #app-label { font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:rgba(255,255,255,.28); }
     #status {
@@ -43,7 +90,6 @@
     #status.ready   { color:rgba(255,255,255,.9); border-color:rgba(255,255,255,.5); }
     #status.reading { color:#fff;                 border-color:#fff; }
 
-    /* big number */
     #speed-display {
       text-align:center;
       opacity:0; transform:scale(.93);
@@ -62,8 +108,11 @@
       color:rgba(255,255,255,.4); margin-top:10px;
     }
 
-    /* controls */
-    #controls { display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
+    #controls {
+      display:flex; gap:10px;
+      justify-content:center; flex-wrap:wrap;
+      pointer-events:all;
+    }
     .btn {
       font-family:inherit; font-size:11px;
       letter-spacing:.09em; text-transform:uppercase;
@@ -71,23 +120,19 @@
       background:rgba(0,0,0,.4);
       border:1.5px solid rgba(255,255,255,.15);
       border-radius:6px; padding:10px 18px; cursor:pointer;
-      transition:all .15s;
     }
     .btn.on { color:#fff; border-color:rgba(255,255,255,.55); background:rgba(255,255,255,.1); }
 
-    /* ball ring */
+    /* ── ball ring ── */
     #ring {
       position:absolute;
       border:3px solid rgba(255,218,0,.9);
       border-radius:50%;
       transform:translate(-50%,-50%);
-      pointer-events:none;
-      display:none;
+      pointer-events:none; display:none;
       box-shadow:0 0 0 1px rgba(0,0,0,.4), 0 0 16px rgba(255,218,0,.5);
-      transition: width .06s, height .06s, left .06s, top .06s;
     }
 
-    /* error */
     #error-msg {
       position:absolute; inset:0; display:none;
       align-items:center; justify-content:center;
@@ -103,6 +148,15 @@
 
 <video id="video" playsinline autoplay muted></video>
 <canvas id="canvas"></canvas>
+<div id="cursor"></div>
+
+<!-- Tap to identify screen -->
+<div id="tap-screen">
+  <div class="tap-icon"></div>
+  <div class="tap-title">Tap the ball</div>
+  <div class="tap-sub">Touch the ball in the camera view to lock it in</div>
+</div>
+
 <div id="ring"></div>
 
 <div id="overlay">
@@ -110,16 +164,14 @@
     <div id="app-label">Putt Speed</div>
     <div id="status">Looking for ball…</div>
   </div>
-
   <div id="speed-display">
     <div id="speed-number">0.0</div>
     <div id="speed-unit">ft / sec</div>
   </div>
-
   <div id="controls">
-    <button class="btn on"  id="voice-btn" onclick="toggleVoice()">Voice On</button>
-    <button class="btn"     id="unit-btn"  onclick="toggleUnit()">mph</button>
-    <button class="btn on"  id="sens-btn"  onclick="cycleSens()">Indoor</button>
+    <button class="btn on" id="voice-btn" onclick="toggleVoice()">Voice On</button>
+    <button class="btn"    id="unit-btn"  onclick="toggleUnit()">mph</button>
+    <button class="btn"                   onclick="retap()">Re-tap Ball</button>
   </div>
 </div>
 
@@ -130,28 +182,16 @@
 
 <script>
 // ─────────────────────────────────────────────────
-//  SENSITIVITY PRESETS
+//  CONSTANTS
 // ─────────────────────────────────────────────────
-const SENS = [
-  { label:'Indoor',  lum:118, sat:75 },
-  { label:'Mixed',   lum:140, sat:60 },
-  { label:'Outdoor', lum:162, sat:48 },
-];
-let sensIdx = 0;
-
-function getLum() { return SENS[sensIdx].lum; }
-function getSat() { return SENS[sensIdx].sat; }
-
-// ─────────────────────────────────────────────────
-//  CONFIG
-// ─────────────────────────────────────────────────
-const BALL_IN    = 1.68;   // USGA diameter
-const STRIDE     = 3;      // scan every Nth pixel
-const MIN_PIX    = 12;     // min qualifying pixels for a valid blob
-const MIN_DIAM   = 18;     // px
-const MAX_DIAM   = 380;    // px
-const STILL_N    = 20;     // frames stable → arm
-const MOVE_PX    = 8;      // centroid shift → motion
+const BALL_IN    = 1.68;  // USGA diameter, inches
+const STRIDE     = 3;     // scan every Nth pixel
+const TOLERANCE  = 52;    // Euclidean RGB distance for color match
+const MIN_PIX    = 10;    // min matching sampled pixels for a valid blob
+const MIN_DIAM   = 14;    // px
+const MAX_DIAM   = 420;   // px
+const STILL_N    = 22;    // frames stable to arm
+const MOVE_PX    = 9;     // centroid shift to trigger measuring
 const MIN_FRAMES = 3;
 const MAX_FRAMES = 10;
 const DISPLAY_MS = 4200;
@@ -159,8 +199,9 @@ const DISPLAY_MS = 4200;
 // ─────────────────────────────────────────────────
 //  STATE
 // ─────────────────────────────────────────────────
-const S = { SCANNING:0, ARMED:1, MEASURING:2, DISPLAY:3 };
-let state      = S.SCANNING;
+const S = { SETUP:0, SCANNING:1, ARMED:2, MEASURING:3, DISPLAY:4 };
+let state      = S.SETUP;
+let targetColor= null;   // { r, g, b } from tap
 let stillCount = 0;
 let armBall    = null;
 let mFrames    = [];
@@ -173,18 +214,19 @@ let showMph    = false;
 // ─────────────────────────────────────────────────
 //  DOM
 // ─────────────────────────────────────────────────
-const video    = document.getElementById('video');
-const canvas   = document.getElementById('canvas');
-const ctx      = canvas.getContext('2d', { willReadFrequently:true });
-const statusEl = document.getElementById('status');
-const dispEl   = document.getElementById('speed-display');
-const numEl    = document.getElementById('speed-number');
-const unitEl   = document.getElementById('speed-unit');
-const ringEl   = document.getElementById('ring');
-const voiceBtn = document.getElementById('voice-btn');
-const unitBtn  = document.getElementById('unit-btn');
-const sensBtn  = document.getElementById('sens-btn');
-const errMsg   = document.getElementById('error-msg');
+const video     = document.getElementById('video');
+const canvas    = document.getElementById('canvas');
+const ctx       = canvas.getContext('2d', { willReadFrequently:true });
+const tapScreen = document.getElementById('tap-screen');
+const cursorEl  = document.getElementById('cursor');
+const statusEl  = document.getElementById('status');
+const dispEl    = document.getElementById('speed-display');
+const numEl     = document.getElementById('speed-number');
+const unitEl    = document.getElementById('speed-unit');
+const ringEl    = document.getElementById('ring');
+const voiceBtn  = document.getElementById('voice-btn');
+const unitBtn   = document.getElementById('unit-btn');
+const errMsg    = document.getElementById('error-msg');
 
 // ─────────────────────────────────────────────────
 //  CAMERA
@@ -205,22 +247,87 @@ async function startCamera() {
 }
 
 // ─────────────────────────────────────────────────
-//  BALL DETECTION  — two-pass white blob finder
+//  TAP HANDLING — cursor follows finger on setup screen
+// ─────────────────────────────────────────────────
+function getEventPos(e) {
+  const t = e.touches ? e.touches[0] : e;
+  return { x: t.clientX, y: t.clientY };
+}
+
+tapScreen.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const {x,y} = getEventPos(e);
+  cursorEl.style.display = 'block';
+  cursorEl.style.left = x + 'px';
+  cursorEl.style.top  = y + 'px';
+}, { passive:false });
+
+tapScreen.addEventListener('touchend',  e => { cursorEl.style.display='none'; handleTap(e); });
+tapScreen.addEventListener('click',     e => handleTap(e));
+
+function handleTap(e) {
+  const {x,y} = getEventPos(e);
+  sampleBallColor(x, y);
+}
+
+function sampleBallColor(screenX, screenY) {
+  if (video.readyState < 2) return;
+
+  // Map screen → canvas coordinates
+  const rect   = video.getBoundingClientRect();
+  const scaleX = canvas.width  / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const cx     = Math.round((screenX - rect.left) * scaleX);
+  const cy     = Math.round((screenY - rect.top)  * scaleY);
+
+  // Draw current frame to canvas so we can sample it
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  // Sample 16×16 region around tap, take median-ish (trimmed mean)
+  const radius = 8;
+  const x0 = Math.max(0, cx - radius);
+  const y0 = Math.max(0, cy - radius);
+  const x1 = Math.min(canvas.width,  cx + radius);
+  const y1 = Math.min(canvas.height, cy + radius);
+  const region = ctx.getImageData(x0, y0, x1-x0, y1-y0);
+
+  // Collect all pixel brightnesses, keep top 40% (the ball centre, not edges)
+  const pixels = [];
+  for (let i=0; i<region.data.length; i+=4) {
+    const r=region.data[i], g=region.data[i+1], b=region.data[i+2];
+    const lum=(r*77+g*150+b*29)>>8;
+    pixels.push({ r, g, b, lum });
+  }
+  pixels.sort((a,b)=>b.lum-a.lum);
+  const keep = pixels.slice(0, Math.max(4, Math.floor(pixels.length*0.4)));
+  const rAvg = keep.reduce((s,p)=>s+p.r,0)/keep.length;
+  const gAvg = keep.reduce((s,p)=>s+p.g,0)/keep.length;
+  const bAvg = keep.reduce((s,p)=>s+p.b,0)/keep.length;
+
+  targetColor = { r:rAvg, g:gAvg, b:bAvg };
+
+  // Switch to scanning
+  tapScreen.classList.add('hidden');
+  state = S.SCANNING;
+  stillCount = 0; armBall = null;
+  setStatus('Looking for ball…');
+}
+
+// ─────────────────────────────────────────────────
+//  BALL DETECTION — color-match blob
 // ─────────────────────────────────────────────────
 function detectBall(data) {
-  const w = canvas.width, h = canvas.height;
-  const s = STRIDE;
-  const LUM = getLum(), SAT = getSat();
+  if (!targetColor) return null;
+  const { r:tr, g:tg, b:tb } = targetColor;
+  const w=canvas.width, h=canvas.height, s=STRIDE;
 
-  // Pass 1 — rough centroid of all qualifying pixels
+  // Pass 1 — find all matching pixels
   let sx=0,sy=0,n=0,x0=w,x1=0,y0=h,y1=0;
   for (let y=0;y<h;y+=s) {
     for (let x=0;x<w;x+=s) {
       const p=(y*w+x)<<2;
-      const r=data[p],g=data[p+1],b=data[p+2];
-      const lum=(r*77+g*150+b*29)>>8;
-      const sat=Math.max(r,g,b)-Math.min(r,g,b);
-      if (lum>LUM && sat<SAT) {
+      const dr=data[p]-tr, dg=data[p+1]-tg, db=data[p+2]-tb;
+      if (dr*dr+dg*dg+db*db < TOLERANCE*TOLERANCE) {
         sx+=x;sy+=y;n++;
         if(x<x0)x0=x;if(x>x1)x1=x;
         if(y<y0)y0=y;if(y>y1)y1=y;
@@ -233,19 +340,17 @@ function detectBall(data) {
   if (diam1<MIN_DIAM||diam1>MAX_DIAM) return null;
 
   const cx1=sx/n, cy1=sy/n;
-  const maxR=diam1*0.9;
+  const maxR=diam1*0.85;
 
-  // Pass 2 — refine: keep only pixels near rough centroid
+  // Pass 2 — restrict to pixels near rough centroid (isolates ball from matching floor patches)
   sx=0;sy=0;n=0;x0=w;x1=0;y0=h;y1=0;
   for (let y=0;y<h;y+=s) {
     for (let x=0;x<w;x+=s) {
       const p=(y*w+x)<<2;
-      const r=data[p],g=data[p+1],b=data[p+2];
-      const lum=(r*77+g*150+b*29)>>8;
-      const sat=Math.max(r,g,b)-Math.min(r,g,b);
-      if (lum>LUM && sat<SAT) {
-        const dx=x-cx1,dy=y-cy1;
-        if (Math.sqrt(dx*dx+dy*dy)<=maxR) {
+      const dr=data[p]-tr, dg=data[p+1]-tg, db=data[p+2]-tb;
+      if (dr*dr+dg*dg+db*db < TOLERANCE*TOLERANCE) {
+        const dx=x-cx1, dy=y-cy1;
+        if (dx*dx+dy*dy<=maxR*maxR) {
           sx+=x;sy+=y;n++;
           if(x<x0)x0=x;if(x>x1)x1=x;
           if(y<y0)y0=y;if(y>y1)y1=y;
@@ -266,14 +371,15 @@ function detectBall(data) {
 // ─────────────────────────────────────────────────
 function showRing(ball) {
   if (!ball) { ringEl.style.display='none'; return; }
-  const sx=window.innerWidth/canvas.width;
-  const sy=window.innerHeight/canvas.height;
+  const sx=window.innerWidth/canvas.width, sy=window.innerHeight/canvas.height;
   const sz=Math.max(sx,sy);
-  ringEl.style.display='block';
-  ringEl.style.left  =(ball.x*sx)+'px';
-  ringEl.style.top   =(ball.y*sy)+'px';
-  ringEl.style.width =(ball.diam*sz)+'px';
-  ringEl.style.height=(ball.diam*sz)+'px';
+  ringEl.style.cssText=`
+    display:block;
+    left:${ball.x*sx}px;
+    top:${ball.y*sy}px;
+    width:${ball.diam*sz}px;
+    height:${ball.diam*sz}px;
+  `;
 }
 
 // ─────────────────────────────────────────────────
@@ -301,7 +407,7 @@ function calcSpeed(frames) {
 function showSpeed(fps) {
   lastSpeed=fps;
   const val=showMph?fps*0.6818:fps;
-  numEl.textContent =val.toFixed(1);
+  numEl.textContent=val.toFixed(1);
   unitEl.textContent=showMph?'mph':'ft / sec';
   dispEl.classList.add('visible');
   if (voiceOn) {
@@ -326,9 +432,7 @@ function finalize() {
   mFrames=[];
   if (spd!==null&&spd>0.3&&spd<38) {
     state=S.DISPLAY;
-    showSpeed(spd);
-    setStatus('');
-    showRing(null);
+    showSpeed(spd); showRing(null); setStatus('');
     clearTimeout(displayTmr);
     displayTmr=setTimeout(()=>{
       dispEl.classList.remove('visible');
@@ -337,8 +441,7 @@ function finalize() {
     }, DISPLAY_MS);
   } else {
     state=S.SCANNING; stillCount=0; armBall=null;
-    setStatus('Looking for ball…');
-    showRing(null);
+    setStatus('Looking for ball…'); showRing(null);
   }
 }
 
@@ -347,36 +450,26 @@ function finalize() {
 // ─────────────────────────────────────────────────
 function loop() {
   requestAnimationFrame(loop);
-  if (video.readyState<2) return;
+  if (video.readyState<2||state===S.SETUP) return;
 
   ctx.drawImage(video,0,0,canvas.width,canvas.height);
   const {data}=ctx.getImageData(0,0,canvas.width,canvas.height);
   const ball=detectBall(data);
 
-  switch (state) {
+  switch(state) {
 
     case S.SCANNING: {
       showRing(ball);
-      if (!ball) {
-        stillCount=0; armBall=null;
-        setStatus('Looking for ball…');
-        break;
-      }
+      if (!ball) { stillCount=0; armBall=null; setStatus('Looking for ball…'); break; }
       setStatus('Ball found — hold still','found');
       if (!armBall) { armBall=ball; stillCount=0; break; }
-      const moved=Math.hypot(ball.x-armBall.x,ball.y-armBall.y);
-      if (moved<MOVE_PX) {
+      const mv=Math.hypot(ball.x-armBall.x,ball.y-armBall.y);
+      if (mv<MOVE_PX) {
         stillCount++;
-        armBall=ball; // drift-correct
-        // calibrate from diameter while still
+        armBall=ball;
         if (ball.diam>MIN_DIAM) pxPerFoot=(ball.diam/BALL_IN)*12;
-      } else {
-        stillCount=0; armBall=ball;
-      }
-      if (stillCount>=STILL_N) {
-        state=S.ARMED;
-        setStatus('Ready','ready');
-      }
+      } else { stillCount=0; armBall=ball; }
+      if (stillCount>=STILL_N) { state=S.ARMED; setStatus('Ready','ready'); }
       break;
     }
 
@@ -384,22 +477,13 @@ function loop() {
       showRing(ball);
       if (!ball) {
         stillCount--;
-        if (stillCount<-8) {
-          state=S.SCANNING; stillCount=0; armBall=null;
-          setStatus('Looking for ball…');
-        }
+        if (stillCount<-10) { state=S.SCANNING; stillCount=0; armBall=null; setStatus('Looking for ball…'); }
         break;
       }
-      const moved=Math.hypot(ball.x-armBall.x,ball.y-armBall.y);
-      if (moved>MOVE_PX) {
-        state=S.MEASURING;
-        mFrames=[armBall,ball];
-        setStatus('Reading…','reading');
-        showRing(null);
-      } else {
-        armBall=ball;
-        stillCount++;
-      }
+      if (Math.hypot(ball.x-armBall.x,ball.y-armBall.y)>MOVE_PX) {
+        state=S.MEASURING; mFrames=[armBall,ball];
+        setStatus('Reading…','reading'); showRing(null);
+      } else { armBall=ball; }
       break;
     }
 
@@ -408,7 +492,7 @@ function loop() {
         mFrames.push(ball);
         if (mFrames.length>=MAX_FRAMES) finalize();
       } else {
-        mFrames.length>=MIN_FRAMES ? finalize() : (()=>{
+        mFrames.length>=MIN_FRAMES?finalize():(()=>{
           state=S.SCANNING; stillCount=0; armBall=null;
           setStatus('Looking for ball…'); showRing(null);
         })();
@@ -437,12 +521,12 @@ function toggleUnit() {
   if (lastSpeed!==null) showSpeed(lastSpeed);
 }
 
-function cycleSens() {
-  sensIdx=(sensIdx+1)%SENS.length;
-  sensBtn.textContent=SENS[sensIdx].label;
-  // reset so it re-finds ball with new threshold
-  state=S.SCANNING; stillCount=0; armBall=null;
-  setStatus('Looking for ball…'); showRing(null);
+function retap() {
+  targetColor=null; state=S.SETUP;
+  stillCount=0; armBall=null; mFrames=[];
+  tapScreen.classList.remove('hidden');
+  showRing(null); dispEl.classList.remove('visible');
+  clearTimeout(displayTmr);
 }
 
 startCamera();
