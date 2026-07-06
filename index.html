@@ -67,14 +67,32 @@
       background:rgba(255,218,0,.9); border-radius:50%;
     }
 
-    /* ── main overlay ── */
+    /* ── main overlay: controls + status pinned to top, speed reading pushed to bottom ── */
     #overlay {
       position:absolute; inset:0;
       display:flex; flex-direction:column;
-      align-items:center; justify-content:space-between;
-      padding: max(env(safe-area-inset-top),32px) 24px max(env(safe-area-inset-bottom),28px);
+      align-items:center;
+      padding: max(env(safe-area-inset-top),28px) 24px max(env(safe-area-inset-bottom),28px);
       pointer-events:none;
     }
+
+    #top-bar { display:flex; flex-direction:column; align-items:center; gap:14px; }
+
+    #controls {
+      display:flex; gap:10px;
+      justify-content:center; flex-wrap:wrap;
+      pointer-events:all;
+    }
+    .btn {
+      font-family:inherit; font-size:11px;
+      letter-spacing:.09em; text-transform:uppercase;
+      color:rgba(255,255,255,.45);
+      background:rgba(0,0,0,.4);
+      border:1.5px solid rgba(255,255,255,.15);
+      border-radius:6px; padding:10px 18px; cursor:pointer;
+    }
+    .btn.on { color:#fff; border-color:rgba(255,255,255,.55); background:rgba(255,255,255,.1); }
+    .btn.static { cursor:default; }
 
     #status-wrap { display:flex; flex-direction:column; align-items:center; gap:8px; }
     #app-label { font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:rgba(255,255,255,.28); }
@@ -92,6 +110,7 @@
 
     #speed-display {
       text-align:center;
+      margin-top:auto;
       opacity:0; transform:scale(.93);
       transition:opacity .13s ease, transform .13s ease;
       pointer-events:none;
@@ -107,21 +126,6 @@
       letter-spacing:.16em; text-transform:uppercase;
       color:rgba(255,255,255,.4); margin-top:10px;
     }
-
-    #controls {
-      display:flex; gap:10px;
-      justify-content:center; flex-wrap:wrap;
-      pointer-events:all;
-    }
-    .btn {
-      font-family:inherit; font-size:11px;
-      letter-spacing:.09em; text-transform:uppercase;
-      color:rgba(255,255,255,.45);
-      background:rgba(0,0,0,.4);
-      border:1.5px solid rgba(255,255,255,.15);
-      border-radius:6px; padding:10px 18px; cursor:pointer;
-    }
-    .btn.on { color:#fff; border-color:rgba(255,255,255,.55); background:rgba(255,255,255,.1); }
 
     /* ── ball ring ── */
     #ring {
@@ -160,18 +164,20 @@
 <div id="ring"></div>
 
 <div id="overlay">
-  <div id="status-wrap">
-    <div id="app-label">Putt Speed</div>
-    <div id="status">Looking for ball…</div>
+  <div id="top-bar">
+    <div id="controls">
+      <button class="btn on" id="voice-btn" onclick="toggleVoice()">Voice On</button>
+      <button class="btn on static" id="unit-btn">ft/s</button>
+      <button class="btn" onclick="retap()">Re-tap Ball</button>
+    </div>
+    <div id="status-wrap">
+      <div id="app-label">Putt Speed</div>
+      <div id="status">Looking for ball…</div>
+    </div>
   </div>
   <div id="speed-display">
     <div id="speed-number">0.0</div>
     <div id="speed-unit">ft / sec</div>
-  </div>
-  <div id="controls">
-    <button class="btn on" id="voice-btn" onclick="toggleVoice()">Voice On</button>
-    <button class="btn"    id="unit-btn"  onclick="toggleUnit()">mph</button>
-    <button class="btn"                   onclick="retap()">Re-tap Ball</button>
   </div>
 </div>
 
@@ -184,17 +190,18 @@
 // ─────────────────────────────────────────────────
 //  CONSTANTS
 // ─────────────────────────────────────────────────
-const BALL_IN    = 1.68;  // USGA diameter, inches
-const STRIDE     = 3;     // scan every Nth pixel
-const TOLERANCE  = 52;    // Euclidean RGB distance for color match
-const MIN_PIX    = 10;    // min matching sampled pixels for a valid blob
-const MIN_DIAM   = 14;    // px
-const MAX_DIAM   = 420;   // px
-const STILL_N    = 22;    // frames stable to arm
-const MOVE_PX    = 9;     // centroid shift to trigger measuring
-const MIN_FRAMES = 3;
-const MAX_FRAMES = 10;
-const DISPLAY_MS = 4200;
+const BALL_IN     = 1.68;  // USGA diameter, inches
+const STRIDE      = 3;     // scan every Nth pixel
+const TOLERANCE   = 52;    // Euclidean RGB distance for color match
+const MIN_PIX     = 10;    // min matching sampled pixels for a valid blob
+const MIN_DIAM    = 14;    // px
+const MAX_DIAM    = 420;   // px
+const STILL_N     = 22;    // frames stable to arm
+const MOVE_PX     = 9;     // centroid shift to trigger measuring
+const MIN_FRAMES  = 3;
+const MAX_FRAMES  = 10;
+const DISPLAY_MS  = 4200;
+const EDGE_MARGIN = 3;     // stride-units of margin from frame edge before we call a blob "clipped"
 
 // ─────────────────────────────────────────────────
 //  STATE
@@ -209,7 +216,6 @@ let pxPerFoot  = null;
 let displayTmr = null;
 let lastSpeed  = null;
 let voiceOn    = true;
-let showMph    = false;
 
 // ─────────────────────────────────────────────────
 //  DOM
@@ -222,10 +228,8 @@ const cursorEl  = document.getElementById('cursor');
 const statusEl  = document.getElementById('status');
 const dispEl    = document.getElementById('speed-display');
 const numEl     = document.getElementById('speed-number');
-const unitEl    = document.getElementById('speed-unit');
 const ringEl    = document.getElementById('ring');
 const voiceBtn  = document.getElementById('voice-btn');
-const unitBtn   = document.getElementById('unit-btn');
 const errMsg    = document.getElementById('error-msg');
 
 // ─────────────────────────────────────────────────
@@ -315,11 +319,15 @@ function sampleBallColor(screenX, screenY) {
 
 // ─────────────────────────────────────────────────
 //  BALL DETECTION — color-match blob
+//  Also flags whether the blob's bounding box touches the frame edge,
+//  since a clipped ball gives a truncated (wrong) diameter and a
+//  biased centroid — both of which corrupt calibration and speed.
 // ─────────────────────────────────────────────────
 function detectBall(data) {
   if (!targetColor) return null;
   const { r:tr, g:tg, b:tb } = targetColor;
   const w=canvas.width, h=canvas.height, s=STRIDE;
+  const margin = EDGE_MARGIN*s;
 
   // Pass 1 — find all matching pixels
   let sx=0,sy=0,n=0,x0=w,x1=0,y0=h,y1=0;
@@ -363,7 +371,9 @@ function detectBall(data) {
   const diam=Math.max(x1-x0,y1-y0);
   if (diam<MIN_DIAM||diam>MAX_DIAM) return null;
 
-  return { x:sx/n, y:sy/n, diam, t:performance.now() };
+  const edgeClipped = (x0<=margin || x1>=w-margin || y0<=margin || y1>=h-margin);
+
+  return { x:sx/n, y:sy/n, diam, t:performance.now(), edgeClipped };
 }
 
 // ─────────────────────────────────────────────────
@@ -384,6 +394,9 @@ function showRing(ball) {
 
 // ─────────────────────────────────────────────────
 //  SPEED
+//  Frame pairs where either end is edge-clipped are excluded — a
+//  clipped blob's centroid is pulled toward its visible side, which
+//  reads as phantom motion unrelated to the ball's real speed.
 // ─────────────────────────────────────────────────
 function calcSpeed(frames) {
   if (frames.length<MIN_FRAMES||!pxPerFoot) return null;
@@ -391,6 +404,7 @@ function calcSpeed(frames) {
   const vels=[];
   for (let i=1;i<use.length;i++) {
     const a=use[i-1],b=use[i];
+    if (a.edgeClipped||b.edgeClipped) continue;
     const dist=Math.hypot(b.x-a.x,b.y-a.y);
     const dt=(b.t-a.t)/1000;
     if (dt>0.003&&dt<0.12) vels.push((dist/pxPerFoot)/dt);
@@ -406,14 +420,12 @@ function calcSpeed(frames) {
 // ─────────────────────────────────────────────────
 function showSpeed(fps) {
   lastSpeed=fps;
-  const val=showMph?fps*0.6818:fps;
-  numEl.textContent=val.toFixed(1);
-  unitEl.textContent=showMph?'mph':'ft / sec';
+  numEl.textContent=fps.toFixed(1);
   dispEl.classList.add('visible');
   if (voiceOn) {
     try {
       speechSynthesis.cancel();
-      const u=new SpeechSynthesisUtterance(val.toFixed(1));
+      const u=new SpeechSynthesisUtterance(fps.toFixed(1));
       u.rate=0.9; speechSynthesis.speak(u);
     } catch(e){}
   }
@@ -467,7 +479,9 @@ function loop() {
       if (mv<MOVE_PX) {
         stillCount++;
         armBall=ball;
-        if (ball.diam>MIN_DIAM) pxPerFoot=(ball.diam/BALL_IN)*12;
+        // Only calibrate off a fully-visible ball — a clipped bounding box
+        // reads a smaller-than-real diameter and would skew every reading after it.
+        if (ball.diam>MIN_DIAM && !ball.edgeClipped) pxPerFoot=(ball.diam/BALL_IN)*12;
       } else { stillCount=0; armBall=ball; }
       if (stillCount>=STILL_N) { state=S.ARMED; setStatus('Ready','ready'); }
       break;
@@ -512,13 +526,6 @@ function toggleVoice() {
   voiceBtn.textContent=voiceOn?'Voice On':'Voice Off';
   voiceBtn.classList.toggle('on',voiceOn);
   if (voiceOn) speechSynthesis.speak(new SpeechSynthesisUtterance(''));
-}
-
-function toggleUnit() {
-  showMph=!showMph;
-  unitBtn.textContent=showMph?'ft/s':'mph';
-  unitBtn.classList.toggle('on',showMph);
-  if (lastSpeed!==null) showSpeed(lastSpeed);
 }
 
 function retap() {
