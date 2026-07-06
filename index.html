@@ -6,206 +6,113 @@
   <title>Putt Speed</title>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet">
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-
+    * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
     body {
-      background: #000;
-      font-family: 'DM Sans', system-ui, sans-serif;
-      color: #fff;
-      width: 100vw;
-      height: 100vh;
-      overflow: hidden;
-      position: fixed;
+      background:#000;
+      font-family:'DM Sans',system-ui,sans-serif;
+      color:#fff;
+      width:100vw; height:100vh;
+      overflow:hidden; position:fixed;
     }
-
     #video {
-      position: absolute;
-      inset: 0;
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      opacity: 0.6;
+      position:absolute; inset:0;
+      width:100%; height:100%;
+      object-fit:cover; opacity:0.55;
     }
+    #canvas { display:none; }
 
-    #canvas { display: none; }
-
-    /* ── Setup screen ── */
-    #setup-screen {
-      position: absolute;
-      inset: 0;
-      z-index: 20;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 20px;
-      padding: 40px 32px;
-      text-align: center;
-      background: rgba(0,0,0,0.72);
-    }
-    #setup-screen.hidden { display: none; }
-
-    .s-eyebrow {
-      font-size: 10px;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      color: rgba(255,255,255,0.35);
-    }
-    .s-heading {
-      font-size: 22px;
-      font-weight: 600;
-      line-height: 1.3;
-      color: #fff;
-      max-width: 270px;
-    }
-    .s-body {
-      font-size: 14px;
-      color: rgba(255,255,255,0.45);
-      max-width: 260px;
-      line-height: 1.6;
-    }
-    #set-bg-btn {
-      margin-top: 8px;
-      font-family: inherit;
-      font-size: 15px;
-      font-weight: 600;
-      color: #000;
-      background: #fff;
-      border: none;
-      border-radius: 10px;
-      padding: 18px 48px;
-      cursor: pointer;
-      letter-spacing: 0.02em;
-    }
-
-    /* ── Main overlay ── */
+    /* ── overlay ── */
     #overlay {
-      position: absolute;
-      inset: 0;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: space-between;
-      padding: max(env(safe-area-inset-top), 32px) 24px max(env(safe-area-inset-bottom), 28px);
+      position:absolute; inset:0;
+      display:flex; flex-direction:column;
+      align-items:center; justify-content:space-between;
+      padding: max(env(safe-area-inset-top),32px) 24px max(env(safe-area-inset-bottom),28px);
     }
 
-    #status-wrap {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 8px;
-    }
+    /* ── status ── */
+    #status-wrap { display:flex; flex-direction:column; align-items:center; gap:8px; }
     #app-label {
-      font-size: 10px;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      color: rgba(255,255,255,0.28);
+      font-size:10px; letter-spacing:0.18em;
+      text-transform:uppercase; color:rgba(255,255,255,0.28);
     }
     #status {
-      font-size: 11px;
-      letter-spacing: 0.11em;
-      text-transform: uppercase;
-      color: rgba(255,255,255,0.4);
-      background: rgba(0,0,0,0.4);
-      padding: 7px 20px;
-      border-radius: 30px;
-      border: 1px solid rgba(255,255,255,0.1);
-      transition: color 0.2s, border-color 0.2s;
+      font-size:11px; letter-spacing:0.11em; text-transform:uppercase;
+      color:rgba(255,255,255,0.38);
+      background:rgba(0,0,0,0.42);
+      padding:7px 20px; border-radius:30px;
+      border:1px solid rgba(255,255,255,0.1);
+      transition:color .2s, border-color .2s;
     }
-    #status.armed  { color: rgba(255,255,255,0.9); border-color: rgba(255,255,255,0.4); }
-    #status.measuring { color: #fff; border-color: rgba(255,255,255,0.7); }
+    #status.ready     { color:rgba(255,255,255,0.9); border-color:rgba(255,255,255,0.4); }
+    #status.measuring { color:#fff;                  border-color:rgba(255,255,255,0.7); }
 
-    /* ── Big number ── */
+    /* ── big number ── */
     #speed-display {
-      text-align: center;
-      opacity: 0;
-      transform: scale(0.93);
-      transition: opacity 0.13s ease, transform 0.13s ease;
-      pointer-events: none;
+      text-align:center;
+      opacity:0; transform:scale(.93);
+      transition:opacity .13s ease, transform .13s ease;
+      pointer-events:none;
     }
-    #speed-display.visible { opacity: 1; transform: scale(1); }
+    #speed-display.visible { opacity:1; transform:scale(1); }
     #speed-number {
-      font-size: clamp(84px, 23vw, 124px);
-      font-weight: 700;
-      letter-spacing: -0.05em;
-      line-height: 1;
-      color: #fff;
-      text-shadow: 0 2px 40px rgba(0,0,0,0.9);
+      font-size:clamp(84px,23vw,124px);
+      font-weight:700; letter-spacing:-.05em; line-height:1;
+      color:#fff; text-shadow:0 2px 40px rgba(0,0,0,.9);
     }
     #speed-unit {
-      font-size: 12px;
-      font-weight: 400;
-      letter-spacing: 0.16em;
-      text-transform: uppercase;
-      color: rgba(255,255,255,0.4);
-      margin-top: 10px;
+      font-size:12px; font-weight:400;
+      letter-spacing:.16em; text-transform:uppercase;
+      color:rgba(255,255,255,0.4); margin-top:10px;
     }
 
-    /* ── Controls ── */
-    #controls {
-      display: flex;
-      gap: 10px;
-      justify-content: center;
-      flex-wrap: wrap;
-    }
+    /* ── controls ── */
+    #controls { display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
     .btn {
-      font-family: inherit;
-      font-size: 11px;
-      letter-spacing: 0.09em;
-      text-transform: uppercase;
-      color: rgba(255,255,255,0.45);
-      background: rgba(0,0,0,0.38);
-      border: 1.5px solid rgba(255,255,255,0.13);
-      border-radius: 6px;
-      padding: 10px 18px;
-      cursor: pointer;
-      transition: all 0.15s;
+      font-family:inherit; font-size:11px;
+      letter-spacing:.09em; text-transform:uppercase;
+      color:rgba(255,255,255,.45);
+      background:rgba(0,0,0,.38);
+      border:1.5px solid rgba(255,255,255,.13);
+      border-radius:6px; padding:10px 18px; cursor:pointer;
+      transition:all .15s;
     }
-    .btn.on { color: #fff; border-color: rgba(255,255,255,0.5); background: rgba(255,255,255,0.1); }
+    .btn.on { color:#fff; border-color:rgba(255,255,255,.5); background:rgba(255,255,255,.1); }
 
-    /* ── Ball ring ── */
-    #ball-ring {
-      position: absolute;
-      border: 2px solid rgba(255, 218, 0, 0.85);
-      border-radius: 50%;
-      transform: translate(-50%, -50%);
-      pointer-events: none;
-      display: none;
-      box-shadow: 0 0 12px rgba(255,218,0,0.35);
+    /* ── stability ring (outer) ── */
+    #stable-ring {
+      position:absolute;
+      top:50%; left:50%;
+      width:64px; height:64px;
+      margin-left:-32px; margin-top:-32px;
+      border-radius:50%;
+      border:2px solid rgba(255,255,255,0.12);
+      pointer-events:none;
+      display:none;
     }
 
-    /* ── Error ── */
+    /* ── error ── */
     #error-msg {
-      position: absolute; inset: 0;
-      display: none; align-items: center; justify-content: center;
-      flex-direction: column; gap: 14px; text-align: center; padding: 32px;
-      background: rgba(0,0,0,0.85);
+      position:absolute; inset:0; display:none;
+      align-items:center; justify-content:center;
+      flex-direction:column; gap:14px;
+      text-align:center; padding:32px;
+      background:rgba(0,0,0,.88);
     }
-    #error-msg.show { display: flex; }
-    #error-msg h2 { font-size: 20px; font-weight: 600; }
-    #error-msg p { font-size: 14px; color: rgba(255,255,255,0.5); line-height: 1.55; }
+    #error-msg.show { display:flex; }
+    #error-msg h2 { font-size:20px; font-weight:600; }
+    #error-msg p  { font-size:14px; color:rgba(255,255,255,.5); line-height:1.55; }
   </style>
 </head>
 <body>
 
 <video id="video" playsinline autoplay muted></video>
 <canvas id="canvas"></canvas>
-<div id="ball-ring"></div>
-
-<div id="setup-screen">
-  <div class="s-eyebrow">Putt Speed — Setup</div>
-  <div class="s-heading">Clear the floor under the camera</div>
-  <div class="s-body">
-    Remove the ball from view. Position the phone flat on the floor, screen facing you.
-    Then tap to lock in the background.
-  </div>
-  <button id="set-bg-btn" onclick="captureBackground()">Set Background</button>
-</div>
+<div id="stable-ring"></div>
 
 <div id="overlay">
   <div id="status-wrap">
     <div id="app-label">Putt Speed</div>
-    <div id="status">Starting…</div>
+    <div id="status">Hold phone still…</div>
   </div>
 
   <div id="speed-display">
@@ -214,9 +121,9 @@
   </div>
 
   <div id="controls">
-    <button class="btn on" id="voice-btn"  onclick="toggleVoice()">Voice On</button>
-    <button class="btn"    id="unit-btn"   onclick="toggleUnit()">mph</button>
-    <button class="btn"                    onclick="resetSetup()">Recalibrate</button>
+    <button class="btn on" id="voice-btn" onclick="toggleVoice()">Voice On</button>
+    <button class="btn"    id="unit-btn"  onclick="toggleUnit()">mph</button>
+    <button class="btn"    id="dist-btn"  onclick="cycleDist()">12 in</button>
   </div>
 </div>
 
@@ -226,64 +133,88 @@
 </div>
 
 <script>
-// ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 //  CONFIG
-// ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 const CFG = {
-  BALL_IN     : 1.68,  // USGA ball diameter, inches
-  DIFF_THRESH : 20,    // grayscale diff to count as foreground
-  MIN_BLOB    : 16,    // min blob diameter px
-  MAX_BLOB    : 400,   // max blob diameter px
-  MIN_PIX     : 8,     // min sampled pixels for a valid blob
-  STRIDE      : 3,     // scan every Nth pixel (perf vs resolution)
-  STILL_N     : 20,    // stable frames before arming
-  MOVE_PX     : 10,    // centroid shift to trigger measurement
-  MIN_FRAMES  : 3,
-  MAX_FRAMES  : 12,
-  DISPLAY_MS  : 4200,
-  SPD_MIN     : 0.3,   // ft/s sanity floor
-  SPD_MAX     : 38,    // ft/s sanity ceiling
+  BALL_IN      : 1.68,   // USGA ball diameter inches
+  STRIDE       : 3,      // pixel scan step
+
+  // Scene stability (frame-to-frame diff)
+  QUIET_MEAN   : 5.0,    // mean abs diff per sampled pixel → scene stable
+  STILL_N      : 22,     // consecutive quiet frames to arm
+  NOISY_GRACE  : 14,     // noisy frames to tolerate before dis-arming
+
+  // Motion blob
+  MOTION_THRESH: 18,     // per-pixel diff → foreground
+  MIN_PIX      : 10,     // min sampled pixels in blob
+  MIN_BLOB     : 14,     // min blob diameter px
+  MAX_BLOB     : 420,    // max blob diameter px
+
+  // Measurement
+  MIN_FRAMES   : 3,
+  MAX_FRAMES   : 10,
+  DISPLAY_MS   : 4200,
+  SPD_MIN      : 0.3,
+  SPD_MAX      : 38,
+
+  // White-ball calibration (adaptive luminance)
+  W_OFFSET     : 38,     // adaptive: frame_mean_lum + W_OFFSET = white threshold
+  W_LUM_FLOOR  : 128,    // absolute luminance floor for white
+  W_SAT_MAX    : 55,
 };
 
-// ═══════════════════════════════════════════════════════════
-//  STATE
-// ═══════════════════════════════════════════════════════════
-const S = { SETUP:0, WAIT_BALL:1, ARMED:2, MEASURING:3, DISPLAY:4 };
-let state      = S.SETUP;
-let bgGray     = null;   // Uint8Array — background snapshot
-let pxPerFoot  = null;   // calibrated from ball diameter
-let stillCount = 0;
-let armBall    = null;
-let mFrames    = [];
-let displayTmr = null;
-let lastSpeed  = null;
-let voiceOn    = true;
-let showMph    = false;
+// Camera-distance → pixels-per-foot table
+// Assumes ~72° horizontal FOV (typical smartphone front cam)
+// ppf = (width_px / (2 * dist_in * tan(36°))) * 12
+const DIST_OPTIONS = [
+  { label:'8 in',  ppf: 1400 },
+  { label:'10 in', ppf: 1120 },
+  { label:'12 in', ppf:  934 },
+  { label:'15 in', ppf:  747 },
+  { label:'18 in', ppf:  622 },
+];
+let distIdx   = 2;  // default 12 in
+let pxPerFoot = DIST_OPTIONS[distIdx].ppf;
 
-// ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════
+const S = { STABILIZING:0, ARMED:1, MEASURING:2, DISPLAY:3 };
+let state       = S.STABILIZING;
+let stillCount  = 0;
+let noisyCount  = 0;
+let mFrames     = [];
+let displayTmr  = null;
+let lastSpeed   = null;
+let voiceOn     = true;
+let showMph     = false;
+let prevGray    = null;   // Uint8Array previous frame grayscale
+let autoCalPPF  = null;   // calibrated from white ball, if found
+
+// ═══════════════════════════════════════════════════
 //  DOM
-// ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 const video    = document.getElementById('video');
 const canvas   = document.getElementById('canvas');
-const ctx      = canvas.getContext('2d', { willReadFrequently: true });
-const setupEl  = document.getElementById('setup-screen');
+const ctx      = canvas.getContext('2d', { willReadFrequently:true });
 const statusEl = document.getElementById('status');
 const dispEl   = document.getElementById('speed-display');
 const numEl    = document.getElementById('speed-number');
 const unitEl   = document.getElementById('speed-unit');
-const ringEl   = document.getElementById('ball-ring');
 const voiceBtn = document.getElementById('voice-btn');
 const unitBtn  = document.getElementById('unit-btn');
+const distBtn  = document.getElementById('dist-btn');
 const errMsg   = document.getElementById('error-msg');
 
-// ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 //  CAMERA
-// ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 async function startCamera() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode:'user', width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:60,min:30} },
-      audio: false
+      video:{ facingMode:'user', width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:60,min:30} },
+      audio:false
     });
     video.srcObject = stream;
     video.addEventListener('loadedmetadata', () => {
@@ -294,64 +225,111 @@ async function startCamera() {
   } catch(e) { errMsg.classList.add('show'); }
 }
 
-// ═══════════════════════════════════════════════════════════
-//  BACKGROUND CAPTURE  — called once at setup tap
-// ═══════════════════════════════════════════════════════════
-function captureBackground() {
-  if (video.readyState < 2) return;
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-  const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const w = canvas.width, h = canvas.height;
-  bgGray = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) {
-    const p = i * 4;
-    bgGray[i] = (data[p]*77 + data[p+1]*150 + data[p+2]*29) >> 8;
-  }
-  setupEl.classList.add('hidden');
-  state = S.WAIT_BALL;
-  setStatus('Place ball in frame');
-}
-
-// ═══════════════════════════════════════════════════════════
-//  BLOB DETECTION  — diff current frame against background
-//  Returns {x, y, diam, t} of the largest changed region
-// ═══════════════════════════════════════════════════════════
-function findBlob(data) {
+// ═══════════════════════════════════════════════════
+//  FRAME PROCESSING
+//  Returns { meanDiff, blob } where blob is the
+//  largest changed region vs previous frame
+// ═══════════════════════════════════════════════════
+function processFrame(data) {
   const w = canvas.width, h = canvas.height, s = CFG.STRIDE;
+  const currGray = new Uint8Array(w * h);
+
+  // Convert to grayscale (integer weights: 77+150+29=256)
+  for (let i = 0; i < w * h; i++) {
+    const p = i << 2;
+    currGray[i] = (data[p]*77 + data[p+1]*150 + data[p+2]*29) >> 8;
+  }
+
+  if (!prevGray) { prevGray = currGray; return { meanDiff:0, blob:null }; }
+
+  let diffSum = 0;
   let sx=0, sy=0, n=0, x0=w, x1=0, y0=h, y1=0;
+  let samples = 0;
 
   for (let y = 0; y < h; y += s) {
     for (let x = 0; x < w; x += s) {
-      const p = (y * w + x) * 4;
-      const gray = (data[p]*77 + data[p+1]*150 + data[p+2]*29) >> 8;
-      if (Math.abs(gray - bgGray[y * w + x]) > CFG.DIFF_THRESH) {
-        sx += x; sy += y; n++;
-        if (x < x0) x0=x; if (x > x1) x1=x;
-        if (y < y0) y0=y; if (y > y1) y1=y;
+      const i    = y * w + x;
+      const diff = Math.abs(currGray[i] - prevGray[i]);
+      diffSum += diff;
+      samples++;
+      if (diff > CFG.MOTION_THRESH) {
+        sx+=x; sy+=y; n++;
+        if (x<x0) x0=x; if (x>x1) x1=x;
+        if (y<y0) y0=y; if (y>y1) y1=y;
       }
     }
   }
 
-  if (n < CFG.MIN_PIX) return null;
+  prevGray = currGray;
+
+  const meanDiff = diffSum / samples;
+  if (n < CFG.MIN_PIX) return { meanDiff, blob:null };
 
   const diam = Math.max(x1-x0, y1-y0);
-  if (diam < CFG.MIN_BLOB || diam > CFG.MAX_BLOB) return null;
+  if (diam < CFG.MIN_BLOB || diam > CFG.MAX_BLOB) return { meanDiff, blob:null };
 
-  return { x: sx/n, y: sy/n, diam, t: performance.now() };
+  return { meanDiff, blob:{ x:sx/n, y:sy/n, diam, t:performance.now() } };
 }
 
-// ═══════════════════════════════════════════════════════════
-//  SPEED CALCULATION  — median of per-frame velocities
-// ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
+//  WHITE BALL AUTO-CALIBRATION
+//  Tries to find a white ball in the current frame
+//  using adaptive luminance threshold
+// ═══════════════════════════════════════════════════
+function tryCalibrate(data) {
+  const w = canvas.width, h = canvas.height, s = CFG.STRIDE;
+
+  // Compute mean luminance
+  let lumSum = 0, samples = 0;
+  for (let y = 0; y < h; y += s) {
+    for (let x = 0; x < w; x += s) {
+      const p = (y*w+x) << 2;
+      lumSum += (data[p]*77 + data[p+1]*150 + data[p+2]*29) >> 8;
+      samples++;
+    }
+  }
+  const meanLum = lumSum / samples;
+  const thresh  = Math.max(meanLum + CFG.W_OFFSET, CFG.W_LUM_FLOOR);
+
+  let sx=0, sy=0, n=0, x0=w, x1=0, y0=h, y1=0;
+  for (let y = 0; y < h; y += s) {
+    for (let x = 0; x < w; x += s) {
+      const p   = (y*w+x) << 2;
+      const lum = (data[p]*77 + data[p+1]*150 + data[p+2]*29) >> 8;
+      const sat = Math.max(data[p],data[p+1],data[p+2]) - Math.min(data[p],data[p+1],data[p+2]);
+      if (lum > thresh && sat < CFG.W_SAT_MAX) {
+        sx+=x; sy+=y; n++;
+        if (x<x0) x0=x; if (x>x1) x1=x;
+        if (y<y0) y0=y; if (y>y1) y1=y;
+      }
+    }
+  }
+  if (n < 8) return;
+
+  const diam = Math.max(x1-x0, y1-y0);
+  if (diam < 18 && diam > 300) return; // too small or large
+
+  // Ball found — derive px/foot from its diameter
+  const candidate = (diam / CFG.BALL_IN) * 12;
+  if (candidate > 200 && candidate < 3000) {
+    autoCalPPF = candidate;
+    pxPerFoot  = autoCalPPF;
+  }
+}
+
+// ═══════════════════════════════════════════════════
+//  SPEED CALCULATION
+// ═══════════════════════════════════════════════════
 function calcSpeed(frames) {
-  if (frames.length < CFG.MIN_FRAMES || !pxPerFoot) return null;
-  const use = frames.slice(0, CFG.MAX_FRAMES);
+  if (frames.length < CFG.MIN_FRAMES) return null;
+  const use  = frames.slice(0, CFG.MAX_FRAMES);
+  const ppf  = pxPerFoot || DIST_OPTIONS[distIdx].ppf;
   const vels = [];
   for (let i = 1; i < use.length; i++) {
     const a = use[i-1], b = use[i];
     const dist = Math.hypot(b.x-a.x, b.y-a.y);
     const dt   = (b.t - a.t) / 1000;
-    if (dt > 0.003 && dt < 0.15) vels.push((dist / pxPerFoot) / dt);
+    if (dt > 0.003 && dt < 0.15) vels.push((dist / ppf) / dt);
   }
   if (!vels.length) return null;
   vels.sort((a,b)=>a-b);
@@ -359,9 +337,9 @@ function calcSpeed(frames) {
   return vels.length%2===0 ? (vels[m-1]+vels[m])/2 : vels[m];
 }
 
-// ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 //  DISPLAY
-// ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 function showSpeed(fps) {
   lastSpeed = fps;
   const val = showMph ? fps*0.6818 : fps;
@@ -372,25 +350,19 @@ function showSpeed(fps) {
     try {
       speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(val.toFixed(1));
-      u.rate = 0.9; speechSynthesis.speak(u);
-    } catch(e) {}
+      u.rate=0.9; speechSynthesis.speak(u);
+    } catch(e){}
   }
 }
 
 function setStatus(txt, cls='') {
   statusEl.textContent = txt;
-  statusEl.className = cls;
+  statusEl.className   = cls;
 }
 
-function updateRing(ball) {
-  if (!ball) { ringEl.style.display='none'; return; }
-  const sx = window.innerWidth/canvas.width, sy = window.innerHeight/canvas.height;
-  ringEl.style.cssText = `display:block; left:${ball.x*sx}px; top:${ball.y*sy}px; width:${ball.diam*sx}px; height:${ball.diam*sy}px;`;
-}
-
-// ═══════════════════════════════════════════════════════════
-//  FINALIZE  — speed measured, display result
-// ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
+//  FINALIZE
+// ═══════════════════════════════════════════════════
 function finalize() {
   const speed = calcSpeed(mFrames);
   mFrames = [];
@@ -401,65 +373,64 @@ function finalize() {
     clearTimeout(displayTmr);
     displayTmr = setTimeout(() => {
       dispEl.classList.remove('visible');
-      backToWait();
+      state = S.STABILIZING;
+      stillCount=0; noisyCount=0;
+      setStatus('Hold phone still…');
     }, CFG.DISPLAY_MS);
   } else {
-    backToWait();
+    state=S.STABILIZING; stillCount=0; noisyCount=0;
+    setStatus('Hold phone still…');
   }
 }
 
-function backToWait() {
-  state = S.WAIT_BALL; stillCount=0; armBall=null; mFrames=[];
-  setStatus('Place ball in frame'); updateRing(null);
-}
-
-// ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 //  MAIN LOOP
-// ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 function loop() {
   requestAnimationFrame(loop);
-  if (video.readyState < 2 || !bgGray) return;
+  if (video.readyState < 2) return;
 
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
   const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const blob = findBlob(data);
+  const { meanDiff, blob } = processFrame(data);
 
   switch (state) {
 
-    case S.WAIT_BALL: {
-      updateRing(blob);
-      if (!blob) { stillCount=0; armBall=null; setStatus('Place ball in frame'); break; }
-
-      // Calibrate px/foot from ball diameter
-      if (blob.diam > CFG.MIN_BLOB) {
-        pxPerFoot = (blob.diam / CFG.BALL_IN) * 12;
-      }
-
-      if (!armBall) { armBall=blob; stillCount=0; }
-      const moved = Math.hypot(blob.x-armBall.x, blob.y-armBall.y);
-      if (moved < CFG.MOVE_PX) {
+    case S.STABILIZING: {
+      if (meanDiff < CFG.QUIET_MEAN) {
         stillCount++;
-        armBall = blob; // drift-correct resting position
-        setStatus(stillCount > 6 ? 'Hold still…' : 'Place ball in frame');
+        // Attempt white-ball calibration every 10 quiet frames
+        if (stillCount % 10 === 5) tryCalibrate(data);
+        setStatus(stillCount > 8 ? 'Almost ready…' : 'Hold phone still…');
+        if (stillCount >= CFG.STILL_N) {
+          state=S.ARMED; noisyCount=0;
+          setStatus('Ready','ready');
+        }
       } else {
-        stillCount=0; armBall=blob;
+        stillCount = Math.max(0, stillCount - 2);
       }
-      if (stillCount >= CFG.STILL_N) { state=S.ARMED; setStatus('Ready','armed'); }
       break;
     }
 
     case S.ARMED: {
-      updateRing(blob);
-      if (!blob) {
-        stillCount--;
-        if (stillCount < -10) backToWait();
-        break;
-      }
-      if (Math.hypot(blob.x-armBall.x, blob.y-armBall.y) > CFG.MOVE_PX) {
-        state=S.MEASURING; mFrames=[armBall, blob];
-        setStatus('Measuring…','measuring'); updateRing(null);
+      if (meanDiff < CFG.QUIET_MEAN) {
+        noisyCount = 0;
+        // Keep trying to calibrate from white ball
+        if (stillCount % 15 === 0) tryCalibrate(data);
+        stillCount++;
+      } else if (blob) {
+        // Motion detected — start measuring
+        noisyCount=0;
+        state=S.MEASURING;
+        mFrames=[blob];
+        setStatus('Measuring…','measuring');
       } else {
-        armBall=blob;
+        // Noisy but no clean blob — could be putter entering frame
+        noisyCount++;
+        if (noisyCount > CFG.NOISY_GRACE) {
+          state=S.STABILIZING; stillCount=0;
+          setStatus('Hold phone still…');
+        }
       }
       break;
     }
@@ -469,7 +440,11 @@ function loop() {
         mFrames.push(blob);
         if (mFrames.length >= CFG.MAX_FRAMES) finalize();
       } else {
-        mFrames.length >= CFG.MIN_FRAMES ? finalize() : backToWait();
+        // Ball left frame or stopped
+        mFrames.length >= CFG.MIN_FRAMES ? finalize() : (() => {
+          state=S.STABILIZING; stillCount=0;
+          setStatus('Hold phone still…');
+        })();
       }
       break;
     }
@@ -478,9 +453,9 @@ function loop() {
   }
 }
 
-// ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 //  CONTROLS
-// ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 function toggleVoice() {
   voiceOn = !voiceOn;
   voiceBtn.textContent = voiceOn ? 'Voice On' : 'Voice Off';
@@ -495,13 +470,12 @@ function toggleUnit() {
   if (lastSpeed !== null) showSpeed(lastSpeed);
 }
 
-function resetSetup() {
-  bgGray=null; pxPerFoot=null; state=S.SETUP;
-  stillCount=0; armBall=null; mFrames=[];
-  setupEl.classList.remove('hidden');
-  clearTimeout(displayTmr);
-  dispEl.classList.remove('visible');
-  updateRing(null);
+function cycleDist() {
+  distIdx = (distIdx + 1) % DIST_OPTIONS.length;
+  const opt = DIST_OPTIONS[distIdx];
+  distBtn.textContent = opt.label;
+  // Only override if we haven't auto-calibrated
+  if (!autoCalPPF) pxPerFoot = opt.ppf;
 }
 
 startCamera();
