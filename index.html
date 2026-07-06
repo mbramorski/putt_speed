@@ -17,11 +17,10 @@
     #video {
       position:absolute; inset:0;
       width:100%; height:100%;
-      object-fit:cover; opacity:0.55;
+      object-fit:cover; opacity:0.6;
     }
     #canvas { display:none; }
 
-    /* ── overlay ── */
     #overlay {
       position:absolute; inset:0;
       display:flex; flex-direction:column;
@@ -29,24 +28,22 @@
       padding: max(env(safe-area-inset-top),32px) 24px max(env(safe-area-inset-bottom),28px);
     }
 
-    /* ── status ── */
+    /* status */
     #status-wrap { display:flex; flex-direction:column; align-items:center; gap:8px; }
-    #app-label {
-      font-size:10px; letter-spacing:0.18em;
-      text-transform:uppercase; color:rgba(255,255,255,0.28);
-    }
+    #app-label { font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:rgba(255,255,255,.28); }
     #status {
-      font-size:11px; letter-spacing:0.11em; text-transform:uppercase;
-      color:rgba(255,255,255,0.38);
-      background:rgba(0,0,0,0.42);
+      font-size:12px; letter-spacing:.1em; text-transform:uppercase;
+      color:rgba(255,255,255,.4);
+      background:rgba(0,0,0,.45);
       padding:7px 20px; border-radius:30px;
-      border:1px solid rgba(255,255,255,0.1);
+      border:1px solid rgba(255,255,255,.12);
       transition:color .2s, border-color .2s;
     }
-    #status.ready     { color:rgba(255,255,255,0.9); border-color:rgba(255,255,255,0.4); }
-    #status.measuring { color:#fff;                  border-color:rgba(255,255,255,0.7); }
+    #status.found   { color:rgba(255,210,0,.9);  border-color:rgba(255,210,0,.4); }
+    #status.ready   { color:rgba(255,255,255,.9); border-color:rgba(255,255,255,.5); }
+    #status.reading { color:#fff;                 border-color:#fff; }
 
-    /* ── big number ── */
+    /* big number */
     #speed-display {
       text-align:center;
       opacity:0; transform:scale(.93);
@@ -62,40 +59,39 @@
     #speed-unit {
       font-size:12px; font-weight:400;
       letter-spacing:.16em; text-transform:uppercase;
-      color:rgba(255,255,255,0.4); margin-top:10px;
+      color:rgba(255,255,255,.4); margin-top:10px;
     }
 
-    /* ── controls ── */
+    /* controls */
     #controls { display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
     .btn {
       font-family:inherit; font-size:11px;
       letter-spacing:.09em; text-transform:uppercase;
       color:rgba(255,255,255,.45);
-      background:rgba(0,0,0,.38);
-      border:1.5px solid rgba(255,255,255,.13);
+      background:rgba(0,0,0,.4);
+      border:1.5px solid rgba(255,255,255,.15);
       border-radius:6px; padding:10px 18px; cursor:pointer;
       transition:all .15s;
     }
-    .btn.on { color:#fff; border-color:rgba(255,255,255,.5); background:rgba(255,255,255,.1); }
+    .btn.on { color:#fff; border-color:rgba(255,255,255,.55); background:rgba(255,255,255,.1); }
 
-    /* ── stability ring (outer) ── */
-    #stable-ring {
+    /* ball ring */
+    #ring {
       position:absolute;
-      top:50%; left:50%;
-      width:64px; height:64px;
-      margin-left:-32px; margin-top:-32px;
+      border:3px solid rgba(255,218,0,.9);
       border-radius:50%;
-      border:2px solid rgba(255,255,255,0.12);
+      transform:translate(-50%,-50%);
       pointer-events:none;
       display:none;
+      box-shadow:0 0 0 1px rgba(0,0,0,.4), 0 0 16px rgba(255,218,0,.5);
+      transition: width .06s, height .06s, left .06s, top .06s;
     }
 
-    /* ── error ── */
+    /* error */
     #error-msg {
       position:absolute; inset:0; display:none;
       align-items:center; justify-content:center;
-      flex-direction:column; gap:14px;
-      text-align:center; padding:32px;
+      flex-direction:column; gap:14px; text-align:center; padding:32px;
       background:rgba(0,0,0,.88);
     }
     #error-msg.show { display:flex; }
@@ -107,12 +103,12 @@
 
 <video id="video" playsinline autoplay muted></video>
 <canvas id="canvas"></canvas>
-<div id="stable-ring"></div>
+<div id="ring"></div>
 
 <div id="overlay">
   <div id="status-wrap">
     <div id="app-label">Putt Speed</div>
-    <div id="status">Hold phone still…</div>
+    <div id="status">Looking for ball…</div>
   </div>
 
   <div id="speed-display">
@@ -121,80 +117,62 @@
   </div>
 
   <div id="controls">
-    <button class="btn on" id="voice-btn" onclick="toggleVoice()">Voice On</button>
-    <button class="btn"    id="unit-btn"  onclick="toggleUnit()">mph</button>
-    <button class="btn"    id="dist-btn"  onclick="cycleDist()">12 in</button>
+    <button class="btn on"  id="voice-btn" onclick="toggleVoice()">Voice On</button>
+    <button class="btn"     id="unit-btn"  onclick="toggleUnit()">mph</button>
+    <button class="btn on"  id="sens-btn"  onclick="cycleSens()">Indoor</button>
   </div>
 </div>
 
 <div id="error-msg">
   <h2>Camera unavailable</h2>
-  <p>Allow camera access in your browser settings and reload the page.</p>
+  <p>Allow camera access in your browser settings and reload.</p>
 </div>
 
 <script>
-// ═══════════════════════════════════════════════════
-//  CONFIG
-// ═══════════════════════════════════════════════════
-const CFG = {
-  BALL_IN      : 1.68,   // USGA ball diameter inches
-  STRIDE       : 3,      // pixel scan step
-
-  // Scene stability (frame-to-frame diff)
-  QUIET_MEAN   : 5.0,    // mean abs diff per sampled pixel → scene stable
-  STILL_N      : 22,     // consecutive quiet frames to arm
-  NOISY_GRACE  : 14,     // noisy frames to tolerate before dis-arming
-
-  // Motion blob
-  MOTION_THRESH: 18,     // per-pixel diff → foreground
-  MIN_PIX      : 10,     // min sampled pixels in blob
-  MIN_BLOB     : 14,     // min blob diameter px
-  MAX_BLOB     : 420,    // max blob diameter px
-
-  // Measurement
-  MIN_FRAMES   : 3,
-  MAX_FRAMES   : 10,
-  DISPLAY_MS   : 4200,
-  SPD_MIN      : 0.3,
-  SPD_MAX      : 38,
-
-  // White-ball calibration (adaptive luminance)
-  W_OFFSET     : 38,     // adaptive: frame_mean_lum + W_OFFSET = white threshold
-  W_LUM_FLOOR  : 128,    // absolute luminance floor for white
-  W_SAT_MAX    : 55,
-};
-
-// Camera-distance → pixels-per-foot table
-// Assumes ~72° horizontal FOV (typical smartphone front cam)
-// ppf = (width_px / (2 * dist_in * tan(36°))) * 12
-const DIST_OPTIONS = [
-  { label:'8 in',  ppf: 1400 },
-  { label:'10 in', ppf: 1120 },
-  { label:'12 in', ppf:  934 },
-  { label:'15 in', ppf:  747 },
-  { label:'18 in', ppf:  622 },
+// ─────────────────────────────────────────────────
+//  SENSITIVITY PRESETS
+// ─────────────────────────────────────────────────
+const SENS = [
+  { label:'Indoor',  lum:118, sat:75 },
+  { label:'Mixed',   lum:140, sat:60 },
+  { label:'Outdoor', lum:162, sat:48 },
 ];
-let distIdx   = 2;  // default 12 in
-let pxPerFoot = DIST_OPTIONS[distIdx].ppf;
+let sensIdx = 0;
 
-// ═══════════════════════════════════════════════════
+function getLum() { return SENS[sensIdx].lum; }
+function getSat() { return SENS[sensIdx].sat; }
+
+// ─────────────────────────────────────────────────
+//  CONFIG
+// ─────────────────────────────────────────────────
+const BALL_IN    = 1.68;   // USGA diameter
+const STRIDE     = 3;      // scan every Nth pixel
+const MIN_PIX    = 12;     // min qualifying pixels for a valid blob
+const MIN_DIAM   = 18;     // px
+const MAX_DIAM   = 380;    // px
+const STILL_N    = 20;     // frames stable → arm
+const MOVE_PX    = 8;      // centroid shift → motion
+const MIN_FRAMES = 3;
+const MAX_FRAMES = 10;
+const DISPLAY_MS = 4200;
+
+// ─────────────────────────────────────────────────
 //  STATE
-// ═══════════════════════════════════════════════════
-const S = { STABILIZING:0, ARMED:1, MEASURING:2, DISPLAY:3 };
-let state       = S.STABILIZING;
-let stillCount  = 0;
-let noisyCount  = 0;
-let mFrames     = [];
-let displayTmr  = null;
-let lastSpeed   = null;
-let voiceOn     = true;
-let showMph     = false;
-let prevGray    = null;   // Uint8Array previous frame grayscale
-let autoCalPPF  = null;   // calibrated from white ball, if found
+// ─────────────────────────────────────────────────
+const S = { SCANNING:0, ARMED:1, MEASURING:2, DISPLAY:3 };
+let state      = S.SCANNING;
+let stillCount = 0;
+let armBall    = null;
+let mFrames    = [];
+let pxPerFoot  = null;
+let displayTmr = null;
+let lastSpeed  = null;
+let voiceOn    = true;
+let showMph    = false;
 
-// ═══════════════════════════════════════════════════
+// ─────────────────────────────────────────────────
 //  DOM
-// ═══════════════════════════════════════════════════
+// ─────────────────────────────────────────────────
 const video    = document.getElementById('video');
 const canvas   = document.getElementById('canvas');
 const ctx      = canvas.getContext('2d', { willReadFrequently:true });
@@ -202,14 +180,15 @@ const statusEl = document.getElementById('status');
 const dispEl   = document.getElementById('speed-display');
 const numEl    = document.getElementById('speed-number');
 const unitEl   = document.getElementById('speed-unit');
+const ringEl   = document.getElementById('ring');
 const voiceBtn = document.getElementById('voice-btn');
 const unitBtn  = document.getElementById('unit-btn');
-const distBtn  = document.getElementById('dist-btn');
+const sensBtn  = document.getElementById('sens-btn');
 const errMsg   = document.getElementById('error-msg');
 
-// ═══════════════════════════════════════════════════
+// ─────────────────────────────────────────────────
 //  CAMERA
-// ═══════════════════════════════════════════════════
+// ─────────────────────────────────────────────────
 async function startCamera() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -225,225 +204,213 @@ async function startCamera() {
   } catch(e) { errMsg.classList.add('show'); }
 }
 
-// ═══════════════════════════════════════════════════
-//  FRAME PROCESSING
-//  Returns { meanDiff, blob } where blob is the
-//  largest changed region vs previous frame
-// ═══════════════════════════════════════════════════
-function processFrame(data) {
-  const w = canvas.width, h = canvas.height, s = CFG.STRIDE;
-  const currGray = new Uint8Array(w * h);
+// ─────────────────────────────────────────────────
+//  BALL DETECTION  — two-pass white blob finder
+// ─────────────────────────────────────────────────
+function detectBall(data) {
+  const w = canvas.width, h = canvas.height;
+  const s = STRIDE;
+  const LUM = getLum(), SAT = getSat();
 
-  // Convert to grayscale (integer weights: 77+150+29=256)
-  for (let i = 0; i < w * h; i++) {
-    const p = i << 2;
-    currGray[i] = (data[p]*77 + data[p+1]*150 + data[p+2]*29) >> 8;
-  }
-
-  if (!prevGray) { prevGray = currGray; return { meanDiff:0, blob:null }; }
-
-  let diffSum = 0;
-  let sx=0, sy=0, n=0, x0=w, x1=0, y0=h, y1=0;
-  let samples = 0;
-
-  for (let y = 0; y < h; y += s) {
-    for (let x = 0; x < w; x += s) {
-      const i    = y * w + x;
-      const diff = Math.abs(currGray[i] - prevGray[i]);
-      diffSum += diff;
-      samples++;
-      if (diff > CFG.MOTION_THRESH) {
-        sx+=x; sy+=y; n++;
-        if (x<x0) x0=x; if (x>x1) x1=x;
-        if (y<y0) y0=y; if (y>y1) y1=y;
+  // Pass 1 — rough centroid of all qualifying pixels
+  let sx=0,sy=0,n=0,x0=w,x1=0,y0=h,y1=0;
+  for (let y=0;y<h;y+=s) {
+    for (let x=0;x<w;x+=s) {
+      const p=(y*w+x)<<2;
+      const r=data[p],g=data[p+1],b=data[p+2];
+      const lum=(r*77+g*150+b*29)>>8;
+      const sat=Math.max(r,g,b)-Math.min(r,g,b);
+      if (lum>LUM && sat<SAT) {
+        sx+=x;sy+=y;n++;
+        if(x<x0)x0=x;if(x>x1)x1=x;
+        if(y<y0)y0=y;if(y>y1)y1=y;
       }
     }
   }
+  if (n<MIN_PIX) return null;
 
-  prevGray = currGray;
+  const diam1=Math.max(x1-x0,y1-y0);
+  if (diam1<MIN_DIAM||diam1>MAX_DIAM) return null;
 
-  const meanDiff = diffSum / samples;
-  if (n < CFG.MIN_PIX) return { meanDiff, blob:null };
+  const cx1=sx/n, cy1=sy/n;
+  const maxR=diam1*0.9;
 
-  const diam = Math.max(x1-x0, y1-y0);
-  if (diam < CFG.MIN_BLOB || diam > CFG.MAX_BLOB) return { meanDiff, blob:null };
-
-  return { meanDiff, blob:{ x:sx/n, y:sy/n, diam, t:performance.now() } };
-}
-
-// ═══════════════════════════════════════════════════
-//  WHITE BALL AUTO-CALIBRATION
-//  Tries to find a white ball in the current frame
-//  using adaptive luminance threshold
-// ═══════════════════════════════════════════════════
-function tryCalibrate(data) {
-  const w = canvas.width, h = canvas.height, s = CFG.STRIDE;
-
-  // Compute mean luminance
-  let lumSum = 0, samples = 0;
-  for (let y = 0; y < h; y += s) {
-    for (let x = 0; x < w; x += s) {
-      const p = (y*w+x) << 2;
-      lumSum += (data[p]*77 + data[p+1]*150 + data[p+2]*29) >> 8;
-      samples++;
-    }
-  }
-  const meanLum = lumSum / samples;
-  const thresh  = Math.max(meanLum + CFG.W_OFFSET, CFG.W_LUM_FLOOR);
-
-  let sx=0, sy=0, n=0, x0=w, x1=0, y0=h, y1=0;
-  for (let y = 0; y < h; y += s) {
-    for (let x = 0; x < w; x += s) {
-      const p   = (y*w+x) << 2;
-      const lum = (data[p]*77 + data[p+1]*150 + data[p+2]*29) >> 8;
-      const sat = Math.max(data[p],data[p+1],data[p+2]) - Math.min(data[p],data[p+1],data[p+2]);
-      if (lum > thresh && sat < CFG.W_SAT_MAX) {
-        sx+=x; sy+=y; n++;
-        if (x<x0) x0=x; if (x>x1) x1=x;
-        if (y<y0) y0=y; if (y>y1) y1=y;
+  // Pass 2 — refine: keep only pixels near rough centroid
+  sx=0;sy=0;n=0;x0=w;x1=0;y0=h;y1=0;
+  for (let y=0;y<h;y+=s) {
+    for (let x=0;x<w;x+=s) {
+      const p=(y*w+x)<<2;
+      const r=data[p],g=data[p+1],b=data[p+2];
+      const lum=(r*77+g*150+b*29)>>8;
+      const sat=Math.max(r,g,b)-Math.min(r,g,b);
+      if (lum>LUM && sat<SAT) {
+        const dx=x-cx1,dy=y-cy1;
+        if (Math.sqrt(dx*dx+dy*dy)<=maxR) {
+          sx+=x;sy+=y;n++;
+          if(x<x0)x0=x;if(x>x1)x1=x;
+          if(y<y0)y0=y;if(y>y1)y1=y;
+        }
       }
     }
   }
-  if (n < 8) return;
+  if (n<MIN_PIX) return null;
 
-  const diam = Math.max(x1-x0, y1-y0);
-  if (diam < 18 && diam > 300) return; // too small or large
+  const diam=Math.max(x1-x0,y1-y0);
+  if (diam<MIN_DIAM||diam>MAX_DIAM) return null;
 
-  // Ball found — derive px/foot from its diameter
-  const candidate = (diam / CFG.BALL_IN) * 12;
-  if (candidate > 200 && candidate < 3000) {
-    autoCalPPF = candidate;
-    pxPerFoot  = autoCalPPF;
-  }
+  return { x:sx/n, y:sy/n, diam, t:performance.now() };
 }
 
-// ═══════════════════════════════════════════════════
-//  SPEED CALCULATION
-// ═══════════════════════════════════════════════════
+// ─────────────────────────────────────────────────
+//  RING
+// ─────────────────────────────────────────────────
+function showRing(ball) {
+  if (!ball) { ringEl.style.display='none'; return; }
+  const sx=window.innerWidth/canvas.width;
+  const sy=window.innerHeight/canvas.height;
+  const sz=Math.max(sx,sy);
+  ringEl.style.display='block';
+  ringEl.style.left  =(ball.x*sx)+'px';
+  ringEl.style.top   =(ball.y*sy)+'px';
+  ringEl.style.width =(ball.diam*sz)+'px';
+  ringEl.style.height=(ball.diam*sz)+'px';
+}
+
+// ─────────────────────────────────────────────────
+//  SPEED
+// ─────────────────────────────────────────────────
 function calcSpeed(frames) {
-  if (frames.length < CFG.MIN_FRAMES) return null;
-  const use  = frames.slice(0, CFG.MAX_FRAMES);
-  const ppf  = pxPerFoot || DIST_OPTIONS[distIdx].ppf;
-  const vels = [];
-  for (let i = 1; i < use.length; i++) {
-    const a = use[i-1], b = use[i];
-    const dist = Math.hypot(b.x-a.x, b.y-a.y);
-    const dt   = (b.t - a.t) / 1000;
-    if (dt > 0.003 && dt < 0.15) vels.push((dist / ppf) / dt);
+  if (frames.length<MIN_FRAMES||!pxPerFoot) return null;
+  const use=frames.slice(0,MAX_FRAMES);
+  const vels=[];
+  for (let i=1;i<use.length;i++) {
+    const a=use[i-1],b=use[i];
+    const dist=Math.hypot(b.x-a.x,b.y-a.y);
+    const dt=(b.t-a.t)/1000;
+    if (dt>0.003&&dt<0.12) vels.push((dist/pxPerFoot)/dt);
   }
   if (!vels.length) return null;
   vels.sort((a,b)=>a-b);
-  const m = Math.floor(vels.length/2);
-  return vels.length%2===0 ? (vels[m-1]+vels[m])/2 : vels[m];
+  const m=Math.floor(vels.length/2);
+  return vels.length%2===0?(vels[m-1]+vels[m])/2:vels[m];
 }
 
-// ═══════════════════════════════════════════════════
+// ─────────────────────────────────────────────────
 //  DISPLAY
-// ═══════════════════════════════════════════════════
+// ─────────────────────────────────────────────────
 function showSpeed(fps) {
-  lastSpeed = fps;
-  const val = showMph ? fps*0.6818 : fps;
-  numEl.textContent  = val.toFixed(1);
-  unitEl.textContent = showMph ? 'mph' : 'ft / sec';
+  lastSpeed=fps;
+  const val=showMph?fps*0.6818:fps;
+  numEl.textContent =val.toFixed(1);
+  unitEl.textContent=showMph?'mph':'ft / sec';
   dispEl.classList.add('visible');
   if (voiceOn) {
     try {
       speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(val.toFixed(1));
+      const u=new SpeechSynthesisUtterance(val.toFixed(1));
       u.rate=0.9; speechSynthesis.speak(u);
     } catch(e){}
   }
 }
 
-function setStatus(txt, cls='') {
-  statusEl.textContent = txt;
-  statusEl.className   = cls;
+function setStatus(txt,cls='') {
+  statusEl.textContent=txt;
+  statusEl.className=cls;
 }
 
-// ═══════════════════════════════════════════════════
+// ─────────────────────────────────────────────────
 //  FINALIZE
-// ═══════════════════════════════════════════════════
+// ─────────────────────────────────────────────────
 function finalize() {
-  const speed = calcSpeed(mFrames);
-  mFrames = [];
-  if (speed !== null && speed > CFG.SPD_MIN && speed < CFG.SPD_MAX) {
-    state = S.DISPLAY;
-    showSpeed(speed);
+  const spd=calcSpeed(mFrames);
+  mFrames=[];
+  if (spd!==null&&spd>0.3&&spd<38) {
+    state=S.DISPLAY;
+    showSpeed(spd);
     setStatus('');
+    showRing(null);
     clearTimeout(displayTmr);
-    displayTmr = setTimeout(() => {
+    displayTmr=setTimeout(()=>{
       dispEl.classList.remove('visible');
-      state = S.STABILIZING;
-      stillCount=0; noisyCount=0;
-      setStatus('Hold phone still…');
-    }, CFG.DISPLAY_MS);
+      state=S.SCANNING; stillCount=0; armBall=null;
+      setStatus('Looking for ball…');
+    }, DISPLAY_MS);
   } else {
-    state=S.STABILIZING; stillCount=0; noisyCount=0;
-    setStatus('Hold phone still…');
+    state=S.SCANNING; stillCount=0; armBall=null;
+    setStatus('Looking for ball…');
+    showRing(null);
   }
 }
 
-// ═══════════════════════════════════════════════════
+// ─────────────────────────────────────────────────
 //  MAIN LOOP
-// ═══════════════════════════════════════════════════
+// ─────────────────────────────────────────────────
 function loop() {
   requestAnimationFrame(loop);
-  if (video.readyState < 2) return;
+  if (video.readyState<2) return;
 
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-  const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const { meanDiff, blob } = processFrame(data);
+  ctx.drawImage(video,0,0,canvas.width,canvas.height);
+  const {data}=ctx.getImageData(0,0,canvas.width,canvas.height);
+  const ball=detectBall(data);
 
   switch (state) {
 
-    case S.STABILIZING: {
-      if (meanDiff < CFG.QUIET_MEAN) {
+    case S.SCANNING: {
+      showRing(ball);
+      if (!ball) {
+        stillCount=0; armBall=null;
+        setStatus('Looking for ball…');
+        break;
+      }
+      setStatus('Ball found — hold still','found');
+      if (!armBall) { armBall=ball; stillCount=0; break; }
+      const moved=Math.hypot(ball.x-armBall.x,ball.y-armBall.y);
+      if (moved<MOVE_PX) {
         stillCount++;
-        // Attempt white-ball calibration every 10 quiet frames
-        if (stillCount % 10 === 5) tryCalibrate(data);
-        setStatus(stillCount > 8 ? 'Almost ready…' : 'Hold phone still…');
-        if (stillCount >= CFG.STILL_N) {
-          state=S.ARMED; noisyCount=0;
-          setStatus('Ready','ready');
-        }
+        armBall=ball; // drift-correct
+        // calibrate from diameter while still
+        if (ball.diam>MIN_DIAM) pxPerFoot=(ball.diam/BALL_IN)*12;
       } else {
-        stillCount = Math.max(0, stillCount - 2);
+        stillCount=0; armBall=ball;
+      }
+      if (stillCount>=STILL_N) {
+        state=S.ARMED;
+        setStatus('Ready','ready');
       }
       break;
     }
 
     case S.ARMED: {
-      if (meanDiff < CFG.QUIET_MEAN) {
-        noisyCount = 0;
-        // Keep trying to calibrate from white ball
-        if (stillCount % 15 === 0) tryCalibrate(data);
-        stillCount++;
-      } else if (blob) {
-        // Motion detected — start measuring
-        noisyCount=0;
-        state=S.MEASURING;
-        mFrames=[blob];
-        setStatus('Measuring…','measuring');
-      } else {
-        // Noisy but no clean blob — could be putter entering frame
-        noisyCount++;
-        if (noisyCount > CFG.NOISY_GRACE) {
-          state=S.STABILIZING; stillCount=0;
-          setStatus('Hold phone still…');
+      showRing(ball);
+      if (!ball) {
+        stillCount--;
+        if (stillCount<-8) {
+          state=S.SCANNING; stillCount=0; armBall=null;
+          setStatus('Looking for ball…');
         }
+        break;
+      }
+      const moved=Math.hypot(ball.x-armBall.x,ball.y-armBall.y);
+      if (moved>MOVE_PX) {
+        state=S.MEASURING;
+        mFrames=[armBall,ball];
+        setStatus('Reading…','reading');
+        showRing(null);
+      } else {
+        armBall=ball;
+        stillCount++;
       }
       break;
     }
 
     case S.MEASURING: {
-      if (blob) {
-        mFrames.push(blob);
-        if (mFrames.length >= CFG.MAX_FRAMES) finalize();
+      if (ball) {
+        mFrames.push(ball);
+        if (mFrames.length>=MAX_FRAMES) finalize();
       } else {
-        // Ball left frame or stopped
-        mFrames.length >= CFG.MIN_FRAMES ? finalize() : (() => {
-          state=S.STABILIZING; stillCount=0;
-          setStatus('Hold phone still…');
+        mFrames.length>=MIN_FRAMES ? finalize() : (()=>{
+          state=S.SCANNING; stillCount=0; armBall=null;
+          setStatus('Looking for ball…'); showRing(null);
         })();
       }
       break;
@@ -453,29 +420,29 @@ function loop() {
   }
 }
 
-// ═══════════════════════════════════════════════════
+// ─────────────────────────────────────────────────
 //  CONTROLS
-// ═══════════════════════════════════════════════════
+// ─────────────────────────────────────────────────
 function toggleVoice() {
-  voiceOn = !voiceOn;
-  voiceBtn.textContent = voiceOn ? 'Voice On' : 'Voice Off';
-  voiceBtn.classList.toggle('on', voiceOn);
+  voiceOn=!voiceOn;
+  voiceBtn.textContent=voiceOn?'Voice On':'Voice Off';
+  voiceBtn.classList.toggle('on',voiceOn);
   if (voiceOn) speechSynthesis.speak(new SpeechSynthesisUtterance(''));
 }
 
 function toggleUnit() {
-  showMph = !showMph;
-  unitBtn.textContent = showMph ? 'ft/s' : 'mph';
-  unitBtn.classList.toggle('on', showMph);
-  if (lastSpeed !== null) showSpeed(lastSpeed);
+  showMph=!showMph;
+  unitBtn.textContent=showMph?'ft/s':'mph';
+  unitBtn.classList.toggle('on',showMph);
+  if (lastSpeed!==null) showSpeed(lastSpeed);
 }
 
-function cycleDist() {
-  distIdx = (distIdx + 1) % DIST_OPTIONS.length;
-  const opt = DIST_OPTIONS[distIdx];
-  distBtn.textContent = opt.label;
-  // Only override if we haven't auto-calibrated
-  if (!autoCalPPF) pxPerFoot = opt.ppf;
+function cycleSens() {
+  sensIdx=(sensIdx+1)%SENS.length;
+  sensBtn.textContent=SENS[sensIdx].label;
+  // reset so it re-finds ball with new threshold
+  state=S.SCANNING; stillCount=0; armBall=null;
+  setStatus('Looking for ball…'); showRing(null);
 }
 
 startCamera();
