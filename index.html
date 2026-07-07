@@ -211,9 +211,8 @@
 //  CONSTANTS
 // ─────────────────────────────────────────────────
 const BALL_IN     = 1.68;  // USGA diameter, inches
-const STRIDE      = 3;     // scan every Nth pixel
 const TOLERANCE   = 52;    // Euclidean RGB distance for color match
-const MIN_PIX     = 10;    // min matching sampled pixels for a valid blob
+const MIN_PIX     = 10;    // min matching pixels for a valid blob
 const MIN_DIAM    = 14;    // px
 const MAX_DIAM    = 420;   // px
 const STILL_N     = 22;    // frames stable to arm
@@ -221,7 +220,29 @@ const MOVE_PX     = 9;     // centroid shift to trigger measuring
 const MIN_FRAMES  = 3;
 const MAX_FRAMES  = 10;
 const DISPLAY_MS  = 4200;
-const EDGE_MARGIN = 3;     // stride-units of margin from frame edge before we call a blob "clipped"
+const EDGE_MARGIN = 10;    // px margin from frame edge before we call a blob "clipped"
+
+// Localized connected-component search. Instead of scanning the whole
+// frame for any matching pixel, we scan a small window around the ball's
+// last known position and only accept pixels that are actually CONNECTED
+// to each other (flood fill) — not just "matching color somewhere nearby".
+// This is what stops the detector from bridging across to a disconnected
+// patch of similarly-colored background (that bridging was the real cause
+// of the detection ring reading 7-10x larger than the actual ball, and of
+// pxPerFoot — and therefore every speed reading — being wildly off).
+const INITIAL_SEARCH_RADIUS = 110; // px, used right after tap before we have a diameter estimate
+const MIN_SEARCH_RADIUS     = 55;
+const MAX_SEARCH_RADIUS     = 240;
+const SEARCH_MARGIN_MULT    = 3.5;  // search window radius = last diameter * this
+const MAX_COMPONENT_FRAC    = 0.55; // reject a connected blob that fills more than this fraction of the search window
+const MAX_MISS_BEFORE_RESET = 45;   // ~0.75s at 60fps of no detection before falling back to a full-window search
+
+const MAX_WIN_DIM   = 2*MAX_SEARCH_RADIUS + 4;
+const MAX_WIN_TOTAL = MAX_WIN_DIM*MAX_WIN_DIM;
+const matchBuf    = new Uint8Array(MAX_WIN_TOTAL);
+const visitedBuf  = new Uint8Array(MAX_WIN_TOTAL);
+const qxBuf       = new Int32Array(MAX_WIN_TOTAL);
+const qyBuf       = new Int32Array(MAX_WIN_TOTAL);
 
 // ─────────────────────────────────────────────────
 //  STATE
@@ -236,6 +257,13 @@ let pxPerFoot  = null;
 let displayTmr = null;
 let lastSpeed  = null;
 let voiceOn    = true;
+
+// Frame-to-frame tracking state for the localized detector
+let trackX      = null;
+let trackY      = null;
+let trackDiam   = null;
+let missStreak  = 0;
+let diamHistory = [];  // stable-frame diameters collected while arming, for median calibration
 
 // ─────────────────────────────────────────────────
 //  DOM
@@ -347,6 +375,10 @@ function sampleBallColor(screenX, screenY) {
 
   targetColor = { r:rAvg, g:gAvg, b:bAvg };
 
+  // Anchor the localized search on the tap point; we don't have a diameter
+  // estimate yet so the first search uses the wider INITIAL_SEARCH_RADIUS.
+  trackX = cx; trackY = cy; trackDiam = null; missStreak = 0; diamHistory = [];
+
   // Switch to scanning
   tapScreen.classList.add('hidden');
   state = S.SCANNING;
@@ -355,91 +387,96 @@ function sampleBallColor(screenX, screenY) {
 }
 
 // ─────────────────────────────────────────────────
-//  BALL DETECTION — color-match blob
-//  Also flags whether the blob's bounding box touches the frame edge,
-//  since a clipped ball gives a truncated (wrong) diameter and a
-//  biased centroid — both of which corrupt calibration and speed.
+//  BALL DETECTION — localized connected-component (flood-fill)
+//
+//  Only scans a small window around the ball's last known position, and
+//  only accepts pixels that are actually CONNECTED to each other. A global
+//  color threshold (the old approach) will happily fuse the ball with any
+//  disconnected patch of similar color anywhere in the frame — that's what
+//  was making the detection ring read 7-10x too large, which fed directly
+//  into pxPerFoot and made every speed reading come out far too low.
 // ─────────────────────────────────────────────────
-function detectBall(data) {
+function detectBallLocalized(data, w, h, cx, cy, radius) {
   if (!targetColor) return null;
   const { r:tr, g:tg, b:tb } = targetColor;
-  const w=canvas.width, h=canvas.height, s=STRIDE;
-  const margin = EDGE_MARGIN*s;
 
-  // Pass 1 — find all matching pixels
-  let sx=0,sy=0,n=0,x0=w,x1=0,y0=h,y1=0;
-  for (let y=0;y<h;y+=s) {
-    for (let x=0;x<w;x+=s) {
-      const p=(y*w+x)<<2;
+  const wx0 = Math.max(0, Math.floor(cx - radius));
+  const wy0 = Math.max(0, Math.floor(cy - radius));
+  const wx1 = Math.min(w - 1, Math.ceil(cx + radius));
+  const wy1 = Math.min(h - 1, Math.ceil(cy + radius));
+  const winW = wx1 - wx0 + 1, winH = wy1 - wy0 + 1;
+  if (winW <= 0 || winH <= 0) return null;
+
+  const total = winW * winH;
+  if (total > MAX_WIN_TOTAL) return null; // safety guard, shouldn't happen given radius cap
+
+  const tolSq = TOLERANCE * TOLERANCE;
+  for (let ly=0; ly<winH; ly++) {
+    const gy = wy0 + ly;
+    const rowBase = ly*winW;
+    for (let lx=0; lx<winW; lx++) {
+      const gx = wx0 + lx;
+      const p = (gy*w + gx) << 2;
       const dr=data[p]-tr, dg=data[p+1]-tg, db=data[p+2]-tb;
-      if (dr*dr+dg*dg+db*db < TOLERANCE*TOLERANCE) {
-        sx+=x;sy+=y;n++;
-        if(x<x0)x0=x;if(x>x1)x1=x;
-        if(y<y0)y0=y;if(y>y1)y1=y;
+      matchBuf[rowBase+lx] = (dr*dr+dg*dg+db*db < tolSq) ? 1 : 0;
+    }
+  }
+  visitedBuf.fill(0, 0, total);
+
+  let bestCount=0, bestSumX=0, bestSumY=0, bestMinX=0, bestMaxX=0, bestMinY=0, bestMaxY=0;
+  const maxComponentPix = total * MAX_COMPONENT_FRAC;
+
+  for (let ly=0; ly<winH; ly++) {
+    for (let lx=0; lx<winW; lx++) {
+      const idx = ly*winW + lx;
+      if (!matchBuf[idx] || visitedBuf[idx]) continue;
+
+      // BFS flood fill from this seed
+      let head=0, tail=0;
+      qxBuf[tail]=lx; qyBuf[tail]=ly; tail++;
+      visitedBuf[idx]=1;
+      let count=0, sumX=0, sumY=0;
+      let minX=lx, maxX=lx, minY=ly, maxY=ly;
+
+      while (head<tail) {
+        const px=qxBuf[head], py=qyBuf[head]; head++;
+        count++; sumX+=px; sumY+=py;
+        if (px<minX) minX=px; if (px>maxX) maxX=px;
+        if (py<minY) minY=py; if (py>maxY) maxY=py;
+
+        // 4-connectivity
+        if (px>0) { const ni=py*winW+(px-1); if (matchBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px-1; qyBuf[tail]=py; tail++; } }
+        if (px<winW-1) { const ni=py*winW+(px+1); if (matchBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px+1; qyBuf[tail]=py; tail++; } }
+        if (py>0) { const ni=(py-1)*winW+px; if (matchBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px; qyBuf[tail]=py-1; tail++; } }
+        if (py<winH-1) { const ni=(py+1)*winW+px; if (matchBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px; qyBuf[tail]=py+1; tail++; } }
+      }
+
+      // Reject components too small to trust, or so large they're almost
+      // certainly background bleed rather than the ball itself
+      if (count>=MIN_PIX && count<=maxComponentPix && count>bestCount) {
+        bestCount=count; bestSumX=sumX; bestSumY=sumY;
+        bestMinX=minX; bestMaxX=maxX; bestMinY=minY; bestMaxY=maxY;
       }
     }
   }
-  if (n<MIN_PIX) return null;
 
-  const diam1=Math.max(x1-x0,y1-y0);
-  if (diam1<MIN_DIAM||diam1>MAX_DIAM) return null;
+  if (bestCount===0) return null;
 
-  const cx1=sx/n, cy1=sy/n;
-  const maxR=diam1*0.85;
+  const diam = Math.max(bestMaxX-bestMinX, bestMaxY-bestMinY) + 1;
+  if (diam<MIN_DIAM || diam>MAX_DIAM) return null;
 
-  // Pass 2 — restrict to pixels near rough centroid (isolates ball from matching floor patches)
-  sx=0;sy=0;n=0;x0=w;x1=0;y0=h;y1=0;
-  for (let y=0;y<h;y+=s) {
-    for (let x=0;x<w;x+=s) {
-      const p=(y*w+x)<<2;
-      const dr=data[p]-tr, dg=data[p+1]-tg, db=data[p+2]-tb;
-      if (dr*dr+dg*dg+db*db < TOLERANCE*TOLERANCE) {
-        const dx=x-cx1, dy=y-cy1;
-        if (dx*dx+dy*dy<=maxR*maxR) {
-          sx+=x;sy+=y;n++;
-          if(x<x0)x0=x;if(x>x1)x1=x;
-          if(y<y0)y0=y;if(y>y1)y1=y;
-        }
-      }
-    }
-  }
-  if (n<MIN_PIX) return null;
+  const gx = wx0 + bestSumX/bestCount;
+  const gy = wy0 + bestSumY/bestCount;
+  const gMinX=wx0+bestMinX, gMaxX=wx0+bestMaxX, gMinY=wy0+bestMinY, gMaxY=wy0+bestMaxY;
+  const edgeClipped = (gMinX<=EDGE_MARGIN || gMaxX>=w-EDGE_MARGIN || gMinY<=EDGE_MARGIN || gMaxY>=h-EDGE_MARGIN);
 
-  const diam2=Math.max(x1-x0,y1-y0);
-  if (diam2<MIN_DIAM||diam2>MAX_DIAM) return null;
+  return { x:gx, y:gy, diam, t:performance.now(), edgeClipped };
+}
 
-  const cx2=sx/n, cy2=sy/n;
-
-  // Pass 3 — tighten again around the pass-2 centroid at a smaller radius.
-  // A single loose tolerance window can still catch a ring of background
-  // pixels (skin tone, beige carpet, etc.) beyond the ball itself, which is
-  // what was making the on-screen detection ring read several times larger
-  // than the actual ball. This convergence step shrinks back down to the
-  // real blob.
-  const maxR2=diam2*0.6;
-  sx=0;sy=0;n=0;x0=w;x1=0;y0=h;y1=0;
-  for (let y=0;y<h;y+=s) {
-    for (let x=0;x<w;x+=s) {
-      const p=(y*w+x)<<2;
-      const dr=data[p]-tr, dg=data[p+1]-tg, db=data[p+2]-tb;
-      if (dr*dr+dg*dg+db*db < TOLERANCE*TOLERANCE) {
-        const dx=x-cx2, dy=y-cy2;
-        if (dx*dx+dy*dy<=maxR2*maxR2) {
-          sx+=x;sy+=y;n++;
-          if(x<x0)x0=x;if(x>x1)x1=x;
-          if(y<y0)y0=y;if(y>y1)y1=y;
-        }
-      }
-    }
-  }
-  if (n<MIN_PIX) return null;
-
-  const diam=Math.max(x1-x0,y1-y0);
-  if (diam<MIN_DIAM||diam>MAX_DIAM) return null;
-
-  const edgeClipped = (x0<=margin || x1>=w-margin || y0<=margin || y1>=h-margin);
-
-  return { x:sx/n, y:sy/n, diam, t:performance.now(), edgeClipped };
+function median(arr) {
+  const s = arr.slice().sort((a,b)=>a-b);
+  const m = Math.floor(s.length/2);
+  return s.length%2===0 ? (s[m-1]+s[m])/2 : s[m];
 }
 
 // ─────────────────────────────────────────────────
@@ -519,11 +556,11 @@ function finalize() {
     clearTimeout(displayTmr);
     displayTmr=setTimeout(()=>{
       dispEl.classList.remove('visible');
-      state=S.SCANNING; stillCount=0; armBall=null;
+      state=S.SCANNING; stillCount=0; armBall=null; diamHistory=[];
       setStatus('Looking for ball…');
     }, DISPLAY_MS);
   } else {
-    state=S.SCANNING; stillCount=0; armBall=null;
+    state=S.SCANNING; stillCount=0; armBall=null; diamHistory=[];
     setStatus('Looking for ball…'); showRing(null);
   }
 }
@@ -537,24 +574,39 @@ function loop() {
 
   ctx.drawImage(video,0,0,canvas.width,canvas.height);
   const {data}=ctx.getImageData(0,0,canvas.width,canvas.height);
-  const ball=detectBall(data);
+
+  // Size the search window from the last known diameter (or a generous
+  // default before we have one), and widen it on consecutive misses so a
+  // brief occlusion or motion blur doesn't lose tracking permanently.
+  let radius = trackDiam
+    ? Math.min(MAX_SEARCH_RADIUS, Math.max(MIN_SEARCH_RADIUS, trackDiam*SEARCH_MARGIN_MULT) * (1+missStreak*0.4))
+    : Math.min(MAX_SEARCH_RADIUS, INITIAL_SEARCH_RADIUS * (1+missStreak*0.4));
+  if (missStreak > MAX_MISS_BEFORE_RESET) { radius = MAX_SEARCH_RADIUS; trackDiam = null; }
+
+  const ball = detectBallLocalized(data, canvas.width, canvas.height, trackX, trackY, radius);
+  if (ball) { trackX=ball.x; trackY=ball.y; trackDiam=ball.diam; missStreak=0; }
+  else { missStreak++; }
 
   switch(state) {
 
     case S.SCANNING: {
       showRing(ball);
-      if (!ball) { stillCount=0; armBall=null; setStatus('Looking for ball…'); break; }
+      if (!ball) { stillCount=0; armBall=null; diamHistory=[]; setStatus('Looking for ball…'); break; }
       setStatus('Ball found — hold still','found');
-      if (!armBall) { armBall=ball; stillCount=0; break; }
+      if (!armBall) { armBall=ball; stillCount=0; diamHistory=[]; break; }
       const mv=Math.hypot(ball.x-armBall.x,ball.y-armBall.y);
       if (mv<MOVE_PX) {
         stillCount++;
         armBall=ball;
-        // Only calibrate off a fully-visible ball — a clipped bounding box
-        // reads a smaller-than-real diameter and would skew every reading after it.
-        if (ball.diam>MIN_DIAM && !ball.edgeClipped) pxPerFoot=(ball.diam/BALL_IN)*12;
-      } else { stillCount=0; armBall=ball; }
-      if (stillCount>=STILL_N) { state=S.ARMED; setStatus('Ready','ready'); }
+        if (!ball.edgeClipped) diamHistory.push(ball.diam);
+      } else { stillCount=0; armBall=ball; diamHistory=[]; }
+      if (stillCount>=STILL_N) {
+        // Median over the whole stable window, not a single frame's
+        // reading — one noisy frame can no longer set a bad calibration.
+        if (diamHistory.length) pxPerFoot=(median(diamHistory)/BALL_IN)*12;
+        else if (!ball.edgeClipped) pxPerFoot=(ball.diam/BALL_IN)*12;
+        state=S.ARMED; setStatus('Ready','ready');
+      }
       break;
     }
 
@@ -562,7 +614,7 @@ function loop() {
       showRing(ball);
       if (!ball) {
         stillCount--;
-        if (stillCount<-10) { state=S.SCANNING; stillCount=0; armBall=null; setStatus('Looking for ball…'); }
+        if (stillCount<-10) { state=S.SCANNING; stillCount=0; armBall=null; diamHistory=[]; setStatus('Looking for ball…'); }
         break;
       }
       if (Math.hypot(ball.x-armBall.x,ball.y-armBall.y)>MOVE_PX) {
@@ -578,7 +630,7 @@ function loop() {
         if (mFrames.length>=MAX_FRAMES) finalize();
       } else {
         mFrames.length>=MIN_FRAMES?finalize():(()=>{
-          state=S.SCANNING; stillCount=0; armBall=null;
+          state=S.SCANNING; stillCount=0; armBall=null; diamHistory=[];
           setStatus('Looking for ball…'); showRing(null);
         })();
       }
@@ -607,7 +659,8 @@ function toggleAlign() {
 
 function retap() {
   targetColor=null; state=S.SETUP;
-  stillCount=0; armBall=null; mFrames=[];
+  stillCount=0; armBall=null; mFrames=[]; diamHistory=[];
+  trackX=null; trackY=null; trackDiam=null; missStreak=0;
   tapScreen.classList.remove('hidden');
   showRing(null); dispEl.classList.remove('visible');
   clearTimeout(displayTmr);
