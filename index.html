@@ -246,6 +246,7 @@ const visitedBuf  = new Uint8Array(MAX_WIN_TOTAL);
 const qxBuf       = new Int32Array(MAX_WIN_TOTAL);
 const qyBuf       = new Int32Array(MAX_WIN_TOTAL);
 const ERODE_COMPENSATE = 2; // 1px erosion shrinks a filled disk's bbox by ~2px total; add it back
+const MOTION_TOLERANCE_MULT = 1.3; // relax color match while the ball is moving, to tolerate motion blur
 
 // ─────────────────────────────────────────────────
 //  STATE
@@ -429,7 +430,7 @@ function sampleBallColor(screenX, screenY) {
 //  was making the detection ring read 7-10x too large, which fed directly
 //  into pxPerFoot and made every speed reading come out far too low.
 // ─────────────────────────────────────────────────
-function detectBallLocalized(data, w, h, cx, cy, radius, frameTime) {
+function detectBallLocalized(data, w, h, cx, cy, radius, frameTime, moving) {
   if (!targetColor) return null;
   const { r:tr, g:tg, b:tb } = targetColor;
 
@@ -443,7 +444,14 @@ function detectBallLocalized(data, w, h, cx, cy, radius, frameTime) {
   const total = winW * winH;
   if (total > MAX_WIN_TOTAL) return null; // safety guard, shouldn't happen given radius cap
 
-  const tolSq = TOLERANCE * TOLERANCE;
+  // While the ball is moving, motion blur smears its color across a wider
+  // band at the edges — a real physical effect, not the same thing as
+  // still-frame anti-aliasing. A stricter match window designed for a sharp
+  // resting ball rejects too much of a blurred one, which is what was
+  // capping accurate readings at low speed: faster putts blur more, so they
+  // got filtered out hardest. Relax the tolerance while tracking motion.
+  const tol = moving ? TOLERANCE * MOTION_TOLERANCE_MULT : TOLERANCE;
+  const tolSq = tol * tol;
   for (let ly=0; ly<winH; ly++) {
     const gy = wy0 + ly;
     const rowBase = ly*winW;
@@ -455,24 +463,32 @@ function detectBallLocalized(data, w, h, cx, cy, radius, frameTime) {
     }
   }
 
-  // Erosion pass — a pixel only survives if it AND all four neighbors match.
-  // The ball's true edge in-frame isn't a hard line; there's a few pixels of
-  // anti-aliased blend where ball-color fades into background-color, and
-  // those blend pixels still pass the color threshold. Left in, they pad the
-  // measured diameter outward on every frame — which inflates pxPerFoot at
-  // calibration and, independently, adds noise to the diameter used for
-  // edge-clip checks. Eroding strips that fringe down to the solid core.
-  for (let ly=0; ly<winH; ly++) {
-    const rowBase = ly*winW;
-    for (let lx=0; lx<winW; lx++) {
-      const idx = rowBase+lx;
-      if (!matchBuf[idx]) { erodeBuf[idx]=0; continue; }
-      const left  = lx>0        ? matchBuf[idx-1]     : 0;
-      const right = lx<winW-1   ? matchBuf[idx+1]     : 0;
-      const up    = ly>0        ? matchBuf[idx-winW]  : 0;
-      const down  = ly<winH-1   ? matchBuf[idx+winW]  : 0;
-      erodeBuf[idx] = (left&&right&&up&&down) ? 1 : 0;
+  // Erosion only applies to the STILL calibration phase. It strips the
+  // anti-aliased fringe of a sharp resting ball, which is correct there.
+  // But a moving, blurred ball doesn't have that same thin fringe — it has
+  // a genuinely soft, wide edge — and eroding that can shrink or destroy
+  // the blob entirely, which is what was killing detections (and therefore
+  // valid speed samples) specifically on the faster, more-blurred putts.
+  // During motion we skip erosion and flood-fill the raw match mask.
+  let fillBuf;
+  let diamCompensate = 0;
+  if (moving) {
+    fillBuf = matchBuf;
+  } else {
+    for (let ly=0; ly<winH; ly++) {
+      const rowBase = ly*winW;
+      for (let lx=0; lx<winW; lx++) {
+        const idx = rowBase+lx;
+        if (!matchBuf[idx]) { erodeBuf[idx]=0; continue; }
+        const left  = lx>0        ? matchBuf[idx-1]     : 0;
+        const right = lx<winW-1   ? matchBuf[idx+1]     : 0;
+        const up    = ly>0        ? matchBuf[idx-winW]  : 0;
+        const down  = ly<winH-1   ? matchBuf[idx+winW]  : 0;
+        erodeBuf[idx] = (left&&right&&up&&down) ? 1 : 0;
+      }
     }
+    fillBuf = erodeBuf;
+    diamCompensate = ERODE_COMPENSATE;
   }
   visitedBuf.fill(0, 0, total);
 
@@ -482,7 +498,7 @@ function detectBallLocalized(data, w, h, cx, cy, radius, frameTime) {
   for (let ly=0; ly<winH; ly++) {
     for (let lx=0; lx<winW; lx++) {
       const idx = ly*winW + lx;
-      if (!erodeBuf[idx] || visitedBuf[idx]) continue;
+      if (!fillBuf[idx] || visitedBuf[idx]) continue;
 
       // BFS flood fill from this seed
       let head=0, tail=0;
@@ -498,10 +514,10 @@ function detectBallLocalized(data, w, h, cx, cy, radius, frameTime) {
         if (py<minY) minY=py; if (py>maxY) maxY=py;
 
         // 4-connectivity
-        if (px>0) { const ni=py*winW+(px-1); if (erodeBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px-1; qyBuf[tail]=py; tail++; } }
-        if (px<winW-1) { const ni=py*winW+(px+1); if (erodeBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px+1; qyBuf[tail]=py; tail++; } }
-        if (py>0) { const ni=(py-1)*winW+px; if (erodeBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px; qyBuf[tail]=py-1; tail++; } }
-        if (py<winH-1) { const ni=(py+1)*winW+px; if (erodeBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px; qyBuf[tail]=py+1; tail++; } }
+        if (px>0) { const ni=py*winW+(px-1); if (fillBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px-1; qyBuf[tail]=py; tail++; } }
+        if (px<winW-1) { const ni=py*winW+(px+1); if (fillBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px+1; qyBuf[tail]=py; tail++; } }
+        if (py>0) { const ni=(py-1)*winW+px; if (fillBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px; qyBuf[tail]=py-1; tail++; } }
+        if (py<winH-1) { const ni=(py+1)*winW+px; if (fillBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px; qyBuf[tail]=py+1; tail++; } }
       }
 
       // Reject components too small to trust, or so large they're almost
@@ -515,7 +531,7 @@ function detectBallLocalized(data, w, h, cx, cy, radius, frameTime) {
 
   if (bestCount===0) return null;
 
-  const diam = Math.max(bestMaxX-bestMinX, bestMaxY-bestMinY) + 1 + ERODE_COMPENSATE;
+  const diam = Math.max(bestMaxX-bestMinX, bestMaxY-bestMinY) + 1 + diamCompensate;
   if (diam<MIN_DIAM || diam>MAX_DIAM) return null;
 
   const gx = wx0 + bestSumX/bestCount;
@@ -644,7 +660,11 @@ function processFrame(frameTime) {
     : Math.min(MAX_SEARCH_RADIUS, INITIAL_SEARCH_RADIUS * (1+missStreak*0.4));
   if (missStreak > MAX_MISS_BEFORE_RESET) { radius = MAX_SEARCH_RADIUS; trackDiam = null; }
 
-  const ball = detectBallLocalized(data, canvas.width, canvas.height, trackX, trackY, radius, frameTime);
+  // Only the SCANNING phase expects a still, resting ball (that's when we
+  // calibrate pxPerFoot off a sharp edge). ARMED and MEASURING may involve
+  // real motion blur, so they use the relaxed/no-erosion detection path.
+  const moving = state !== S.SCANNING;
+  const ball = detectBallLocalized(data, canvas.width, canvas.height, trackX, trackY, radius, frameTime, moving);
   if (ball) { trackX=ball.x; trackY=ball.y; trackDiam=ball.diam; missStreak=0; }
   else { missStreak++; }
 
