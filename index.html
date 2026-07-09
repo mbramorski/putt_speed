@@ -130,11 +130,16 @@
     /* ── ball ring ── */
     #ring {
       position:absolute;
-      border:3px solid rgba(255,218,0,.9);
+      border:3px solid rgba(255,90,90,.9);
       border-radius:50%;
       transform:translate(-50%,-50%);
       pointer-events:none; display:none;
-      box-shadow:0 0 0 1px rgba(0,0,0,.4), 0 0 16px rgba(255,218,0,.5);
+      box-shadow:0 0 0 1px rgba(0,0,0,.4), 0 0 16px rgba(255,90,90,.5);
+      transition:border-color .15s, box-shadow .15s;
+    }
+    #ring.locked {
+      border-color:rgba(70,220,120,.95);
+      box-shadow:0 0 0 1px rgba(0,0,0,.4), 0 0 16px rgba(70,220,120,.55);
     }
 
     #history {
@@ -307,6 +312,8 @@ const errMsg    = document.getElementById('error-msg');
 // ─────────────────────────────────────────────────
 //  CAMERA
 // ─────────────────────────────────────────────────
+let cameraReady = false;
+
 async function startCamera() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -314,6 +321,33 @@ async function startCamera() {
       audio:false
     });
     video.srcObject = stream;
+
+    // Attach BEFORE awaiting anything below. applyConstraints is async and
+    // can take a while (observed worse under battery saver, which throttles
+    // background negotiation) — if the listener were attached after that
+    // await, a fast-loading stream's one-shot 'loadedmetadata' event could
+    // fire and be missed entirely while we were still waiting.
+    video.addEventListener('loadedmetadata', () => {
+      canvas.width  = video.videoWidth;
+      canvas.height = video.videoHeight;
+      if (!cameraReady) { cameraReady = true; startLoop(); }
+    });
+
+    // If the video's actual dimensions change AFTER initial load — e.g. the
+    // zoom/framerate negotiation below completes late and the browser
+    // renegotiates resolution, which was reproduced specifically under
+    // battery saver — the canvas would otherwise silently go stale relative
+    // to the real video, throwing off every pixel-based measurement (this
+    // is what was making the detection ring drift away from the ball after
+    // the app had been sitting idle). Re-sync on any such change, and force
+    // a fresh tap since the old calibration and tracked position are no
+    // longer valid in the new coordinate space.
+    video.addEventListener('resize', () => {
+      if (video.videoWidth===canvas.width && video.videoHeight===canvas.height) return;
+      canvas.width  = video.videoWidth;
+      canvas.height = video.videoHeight;
+      retap();
+    });
 
     // getUserMedia constraints above are only "ideal" — push the track to
     // its actual reported max frame rate and max zoom where the browser
@@ -330,12 +364,6 @@ async function startCamera() {
         if (Object.keys(advanced).length) await track.applyConstraints({ advanced:[advanced] });
       } catch(e) { /* capability not supported on this device/browser */ }
     }
-
-    video.addEventListener('loadedmetadata', () => {
-      canvas.width  = video.videoWidth;
-      canvas.height = video.videoHeight;
-      startLoop();
-    });
   } catch(e) { errMsg.classList.add('show'); }
 }
 
@@ -587,7 +615,7 @@ function median(arr) {
 // ─────────────────────────────────────────────────
 //  RING
 // ─────────────────────────────────────────────────
-function showRing(ball) {
+function showRing(ball, locked) {
   if (!ball) { ringEl.style.display='none'; return; }
   // object-fit:cover scales the video by ONE uniform factor (the larger of
   // the two axis ratios) then center-crops the overflow. Mapping x and y
@@ -596,6 +624,7 @@ function showRing(ball) {
   const scale = Math.max(window.innerWidth/canvas.width, window.innerHeight/canvas.height);
   const offX  = (window.innerWidth  - canvas.width  * scale) / 2;
   const offY  = (window.innerHeight - canvas.height * scale) / 2;
+  ringEl.classList.toggle('locked', !!locked);
   ringEl.style.cssText=`
     display:block;
     left:${ball.x*scale + offX}px;
@@ -741,7 +770,7 @@ function processFrame(frameTime) {
   switch(state) {
 
     case S.SCANNING: {
-      showRing(ball);
+      showRing(ball, false);
       if (!ball) { stillCount=0; armBall=null; diamHistory=[]; setStatus('Looking for ball…'); break; }
       setStatus('Ball found — hold still','found');
       if (!armBall) { armBall=ball; stillCount=0; diamHistory=[]; break; }
@@ -762,7 +791,7 @@ function processFrame(frameTime) {
     }
 
     case S.ARMED: {
-      showRing(ball);
+      showRing(ball, true);
       if (!ball) {
         stillCount--;
         if (stillCount<-10) { state=S.SCANNING; stillCount=0; armBall=null; diamHistory=[]; setStatus('Looking for ball…'); }
