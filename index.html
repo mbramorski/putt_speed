@@ -149,6 +149,25 @@
       max-width:78vw;
     }
 
+    #history {
+      position:absolute; right:18px; top:50%; transform:translateY(-50%);
+      display:flex; flex-direction:column; gap:6px;
+      align-items:flex-end;
+      pointer-events:none; z-index:10;
+    }
+    #history .hist-item {
+      font-size:13px; font-weight:500; letter-spacing:.02em;
+      color:rgba(255,255,255,.35);
+      background:rgba(0,0,0,.35);
+      padding:4px 10px; border-radius:6px;
+      white-space:nowrap;
+    }
+    #history .hist-item:first-child {
+      font-size:16px; font-weight:700;
+      color:rgba(255,218,0,.9);
+      background:rgba(0,0,0,.5);
+    }
+
     #error-msg {
       position:absolute; inset:0; display:none;
       align-items:center; justify-content:center;
@@ -201,6 +220,8 @@
   </div>
 </div>
 
+<div id="history"></div>
+
 <div id="error-msg">
   <h2>Camera unavailable</h2>
   <p>Allow camera access in your browser settings and reload.</p>
@@ -240,9 +261,11 @@ const MAX_MISS_BEFORE_RESET = 45;   // ~0.75s at 60fps of no detection before fa
 const MAX_WIN_DIM   = 2*MAX_SEARCH_RADIUS + 4;
 const MAX_WIN_TOTAL = MAX_WIN_DIM*MAX_WIN_DIM;
 const matchBuf    = new Uint8Array(MAX_WIN_TOTAL);
+const erodeBuf    = new Uint8Array(MAX_WIN_TOTAL);
 const visitedBuf  = new Uint8Array(MAX_WIN_TOTAL);
 const qxBuf       = new Int32Array(MAX_WIN_TOTAL);
 const qyBuf       = new Int32Array(MAX_WIN_TOTAL);
+const ERODE_COMPENSATE = 2; // 1px erosion shrinks a filled disk's bbox by ~2px total; add it back
 
 // ─────────────────────────────────────────────────
 //  STATE
@@ -264,6 +287,7 @@ let trackY      = null;
 let trackDiam   = null;
 let missStreak  = 0;
 let diamHistory = [];  // stable-frame diameters collected while arming, for median calibration
+let speedHistory = []; // last 10 accepted putt speeds, most recent first
 
 // ─────────────────────────────────────────────────
 //  DOM
@@ -277,6 +301,7 @@ const statusEl  = document.getElementById('status');
 const dispEl    = document.getElementById('speed-display');
 const numEl     = document.getElementById('speed-number');
 const ringEl    = document.getElementById('ring');
+const historyEl = document.getElementById('history');
 const voiceBtn  = document.getElementById('voice-btn');
 const errMsg    = document.getElementById('error-msg');
 
@@ -310,9 +335,37 @@ async function startCamera() {
     video.addEventListener('loadedmetadata', () => {
       canvas.width  = video.videoWidth;
       canvas.height = video.videoHeight;
-      requestAnimationFrame(loop);
+      startLoop();
     });
   } catch(e) { errMsg.classList.add('show'); }
+}
+
+// ─────────────────────────────────────────────────
+//  FRAME SCHEDULING — real capture-time timestamps
+//
+//  requestAnimationFrame fires on the DISPLAY's refresh cycle, not the
+//  camera's actual frame delivery. If the camera is silently running at a
+//  lower fps than the display (very common under auto-exposure in anything
+//  but bright light), rAF can process the same physical camera frame twice
+//  and hand it a nonzero dt — manufacturing "no movement happened" ticks
+//  that drag the whole speed average down. requestVideoFrameCallback fires
+//  once per actual decoded video frame and hands back that frame's real
+//  presentation time, which is what calcSpeed's dt should be built from.
+// ─────────────────────────────────────────────────
+const useRVFC = typeof video.requestVideoFrameCallback === 'function';
+
+function startLoop() {
+  if (useRVFC) video.requestVideoFrameCallback(tick);
+  else requestAnimationFrame(() => tick(performance.now(), null));
+}
+
+function tick(now, metadata) {
+  const frameTime = metadata && typeof metadata.presentationTime === 'number'
+    ? metadata.presentationTime
+    : now;
+  if (video.readyState>=2 && state!==S.SETUP) processFrame(frameTime);
+  if (useRVFC) video.requestVideoFrameCallback(tick);
+  else requestAnimationFrame(() => tick(performance.now(), null));
 }
 
 // ─────────────────────────────────────────────────
@@ -396,7 +449,7 @@ function sampleBallColor(screenX, screenY) {
 //  was making the detection ring read 7-10x too large, which fed directly
 //  into pxPerFoot and made every speed reading come out far too low.
 // ─────────────────────────────────────────────────
-function detectBallLocalized(data, w, h, cx, cy, radius) {
+function detectBallLocalized(data, w, h, cx, cy, radius, frameTime) {
   if (!targetColor) return null;
   const { r:tr, g:tg, b:tb } = targetColor;
 
@@ -421,6 +474,26 @@ function detectBallLocalized(data, w, h, cx, cy, radius) {
       matchBuf[rowBase+lx] = (dr*dr+dg*dg+db*db < tolSq) ? 1 : 0;
     }
   }
+
+  // Erosion pass — a pixel only survives if it AND all four neighbors match.
+  // The ball's true edge in-frame isn't a hard line; there's a few pixels of
+  // anti-aliased blend where ball-color fades into background-color, and
+  // those blend pixels still pass the color threshold. Left in, they pad the
+  // measured diameter outward on every frame — which inflates pxPerFoot at
+  // calibration and, independently, adds noise to the diameter used for
+  // edge-clip checks. Eroding strips that fringe down to the solid core.
+  for (let ly=0; ly<winH; ly++) {
+    const rowBase = ly*winW;
+    for (let lx=0; lx<winW; lx++) {
+      const idx = rowBase+lx;
+      if (!matchBuf[idx]) { erodeBuf[idx]=0; continue; }
+      const left  = lx>0        ? matchBuf[idx-1]     : 0;
+      const right = lx<winW-1   ? matchBuf[idx+1]     : 0;
+      const up    = ly>0        ? matchBuf[idx-winW]  : 0;
+      const down  = ly<winH-1   ? matchBuf[idx+winW]  : 0;
+      erodeBuf[idx] = (left&&right&&up&&down) ? 1 : 0;
+    }
+  }
   visitedBuf.fill(0, 0, total);
 
   let bestCount=0, bestSumX=0, bestSumY=0, bestMinX=0, bestMaxX=0, bestMinY=0, bestMaxY=0;
@@ -429,7 +502,7 @@ function detectBallLocalized(data, w, h, cx, cy, radius) {
   for (let ly=0; ly<winH; ly++) {
     for (let lx=0; lx<winW; lx++) {
       const idx = ly*winW + lx;
-      if (!matchBuf[idx] || visitedBuf[idx]) continue;
+      if (!erodeBuf[idx] || visitedBuf[idx]) continue;
 
       // BFS flood fill from this seed
       let head=0, tail=0;
@@ -445,10 +518,10 @@ function detectBallLocalized(data, w, h, cx, cy, radius) {
         if (py<minY) minY=py; if (py>maxY) maxY=py;
 
         // 4-connectivity
-        if (px>0) { const ni=py*winW+(px-1); if (matchBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px-1; qyBuf[tail]=py; tail++; } }
-        if (px<winW-1) { const ni=py*winW+(px+1); if (matchBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px+1; qyBuf[tail]=py; tail++; } }
-        if (py>0) { const ni=(py-1)*winW+px; if (matchBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px; qyBuf[tail]=py-1; tail++; } }
-        if (py<winH-1) { const ni=(py+1)*winW+px; if (matchBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px; qyBuf[tail]=py+1; tail++; } }
+        if (px>0) { const ni=py*winW+(px-1); if (erodeBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px-1; qyBuf[tail]=py; tail++; } }
+        if (px<winW-1) { const ni=py*winW+(px+1); if (erodeBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px+1; qyBuf[tail]=py; tail++; } }
+        if (py>0) { const ni=(py-1)*winW+px; if (erodeBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px; qyBuf[tail]=py-1; tail++; } }
+        if (py<winH-1) { const ni=(py+1)*winW+px; if (erodeBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px; qyBuf[tail]=py+1; tail++; } }
       }
 
       // Reject components too small to trust, or so large they're almost
@@ -462,7 +535,7 @@ function detectBallLocalized(data, w, h, cx, cy, radius) {
 
   if (bestCount===0) return null;
 
-  const diam = Math.max(bestMaxX-bestMinX, bestMaxY-bestMinY) + 1;
+  const diam = Math.max(bestMaxX-bestMinX, bestMaxY-bestMinY) + 1 + ERODE_COMPENSATE;
   if (diam<MIN_DIAM || diam>MAX_DIAM) return null;
 
   const gx = wx0 + bestSumX/bestCount;
@@ -470,7 +543,7 @@ function detectBallLocalized(data, w, h, cx, cy, radius) {
   const gMinX=wx0+bestMinX, gMaxX=wx0+bestMaxX, gMinY=wy0+bestMinY, gMaxY=wy0+bestMaxY;
   const edgeClipped = (gMinX<=EDGE_MARGIN || gMaxX>=w-EDGE_MARGIN || gMinY<=EDGE_MARGIN || gMaxY>=h-EDGE_MARGIN);
 
-  return { x:gx, y:gy, diam, t:performance.now(), edgeClipped };
+  return { x:gx, y:gy, diam, t:frameTime, edgeClipped };
 }
 
 function median(arr) {
@@ -544,6 +617,16 @@ function setStatus(txt,cls='') {
   statusEl.className=cls;
 }
 
+function recordSpeed(fps) {
+  speedHistory.unshift(fps);
+  if (speedHistory.length>10) speedHistory.pop();
+  renderHistory();
+}
+
+function renderHistory() {
+  historyEl.innerHTML = speedHistory.map(v=>`<div class="hist-item">${v.toFixed(1)}</div>`).join('');
+}
+
 // ─────────────────────────────────────────────────
 //  FINALIZE
 // ─────────────────────────────────────────────────
@@ -553,6 +636,7 @@ function finalize() {
   if (spd!==null&&spd>0.3&&spd<38) {
     state=S.DISPLAY;
     showSpeed(spd); showRing(null); setStatus('');
+    recordSpeed(spd);
     clearTimeout(displayTmr);
     displayTmr=setTimeout(()=>{
       dispEl.classList.remove('visible');
@@ -566,12 +650,9 @@ function finalize() {
 }
 
 // ─────────────────────────────────────────────────
-//  MAIN LOOP
+//  MAIN LOOP — called once per real camera frame via tick()
 // ─────────────────────────────────────────────────
-function loop() {
-  requestAnimationFrame(loop);
-  if (video.readyState<2||state===S.SETUP) return;
-
+function processFrame(frameTime) {
   ctx.drawImage(video,0,0,canvas.width,canvas.height);
   const {data}=ctx.getImageData(0,0,canvas.width,canvas.height);
 
@@ -583,7 +664,7 @@ function loop() {
     : Math.min(MAX_SEARCH_RADIUS, INITIAL_SEARCH_RADIUS * (1+missStreak*0.4));
   if (missStreak > MAX_MISS_BEFORE_RESET) { radius = MAX_SEARCH_RADIUS; trackDiam = null; }
 
-  const ball = detectBallLocalized(data, canvas.width, canvas.height, trackX, trackY, radius);
+  const ball = detectBallLocalized(data, canvas.width, canvas.height, trackX, trackY, radius, frameTime);
   if (ball) { trackX=ball.x; trackY=ball.y; trackDiam=ball.diam; missStreak=0; }
   else { missStreak++; }
 
