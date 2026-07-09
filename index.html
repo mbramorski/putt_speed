@@ -212,7 +212,6 @@
 //  CONSTANTS
 // ─────────────────────────────────────────────────
 const BALL_IN     = 1.68;  // USGA diameter, inches
-const TOLERANCE   = 52;    // Euclidean RGB distance for color match
 const MIN_PIX     = 10;    // min matching pixels for a valid blob
 const MIN_DIAM    = 14;    // px
 const MAX_DIAM    = 420;   // px
@@ -222,6 +221,23 @@ const MIN_FRAMES  = 3;
 const MAX_FRAMES  = 6; // capped low deliberately — see SPEED comment below
 const DISPLAY_MS  = 4200;
 const EDGE_MARGIN = 10;    // px margin from frame edge before we call a blob "clipped"
+
+// Color matching — HUE + SATURATION, not RGB Euclidean distance.
+// Tested offline against real recorded putts: RGB-distance matching had
+// almost no safe margin between "too tight to catch the blurred ball" and
+// "loose enough to swallow the whole room" (background jumped from a clean
+// few-thousand-pixel match to over half the frame with only a modest
+// tolerance increase). Hue+saturation matching held a clean, connected,
+// stably-shaped blob through the same motion blur that broke RGB matching,
+// on both a hard and soft test putt, with centroid-derived speeds matching
+// independently-verified ground truth on both. HUE_TOL is an absolute
+// tolerance; SAT_MIN is derived per-calibration as a fraction of the
+// tapped ball's own saturation, so it adapts to the specific ball/lighting
+// rather than assuming a fixed brightness.
+const HUE_TOL         = 0.08;   // circular hue distance (hue is 0-1)
+const SAT_MIN_FRAC    = 0.40;   // required saturation = tapped ball's saturation * this
+const SAT_MIN_FLOOR   = 0.12;   // absolute floor regardless of ball color, avoids near-gray false matches
+const VAL_MIN         = 0.12;   // reject near-black pixels; hue is unstable/noisy there
 
 // Localized connected-component search. Instead of scanning the whole
 // frame for any matching pixel, we scan a small window around the ball's
@@ -242,19 +258,18 @@ const MAX_MISS_BEFORE_RESET = 45;   // ~0.75s at 60fps of no detection before fa
 const MAX_WIN_DIM   = 2*MAX_SEARCH_RADIUS + 4;
 const MAX_WIN_TOTAL = MAX_WIN_DIM*MAX_WIN_DIM;
 const matchBuf    = new Uint8Array(MAX_WIN_TOTAL);
-const erodeBuf    = new Uint8Array(MAX_WIN_TOTAL);
 const visitedBuf  = new Uint8Array(MAX_WIN_TOTAL);
 const qxBuf       = new Int32Array(MAX_WIN_TOTAL);
 const qyBuf       = new Int32Array(MAX_WIN_TOTAL);
-const ERODE_COMPENSATE = 2; // 1px erosion shrinks a filled disk's bbox by ~2px total; add it back
-const MOTION_TOLERANCE_MULT = 1.3; // relax color match while the ball is moving, to tolerate motion blur
+
 
 // ─────────────────────────────────────────────────
 //  STATE
 // ─────────────────────────────────────────────────
 const S = { SETUP:0, SCANNING:1, ARMED:2, MEASURING:3, DISPLAY:4 };
 let state      = S.SETUP;
-let targetColor= null;   // { r, g, b } from tap
+let targetHue   = null;  // 0-1, from tap
+let targetSatMin= null;  // derived floor, from tap
 let stillCount = 0;
 let armBall    = null;
 let mFrames    = [];
@@ -406,11 +421,23 @@ function sampleBallColor(screenX, screenY) {
   }
   pixels.sort((a,b)=>b.lum-a.lum);
   const keep = pixels.slice(0, Math.max(4, Math.floor(pixels.length*0.4)));
-  const rAvg = keep.reduce((s,p)=>s+p.r,0)/keep.length;
-  const gAvg = keep.reduce((s,p)=>s+p.g,0)/keep.length;
-  const bAvg = keep.reduce((s,p)=>s+p.b,0)/keep.length;
 
-  targetColor = { r:rAvg, g:gAvg, b:bAvg };
+  // Average hue CIRCULARLY (hue wraps at 1.0, a plain mean would be wrong
+  // near the wrap point) and average saturation, over the brightest 40% of
+  // the tap sample.
+  let sinSum=0, cosSum=0, satSum=0;
+  for (const p of keep) {
+    const hsv = rgbToHsv(p.r, p.g, p.b);
+    sinSum += Math.sin(hsv.h*2*Math.PI);
+    cosSum += Math.cos(hsv.h*2*Math.PI);
+    satSum += hsv.s;
+  }
+  let h = Math.atan2(sinSum, cosSum) / (2*Math.PI);
+  if (h < 0) h += 1;
+  const avgSat = satSum / keep.length;
+
+  targetHue = h;
+  targetSatMin = Math.max(SAT_MIN_FLOOR, avgSat * SAT_MIN_FRAC);
 
   // Anchor the localized search on the tap point; we don't have a diameter
   // estimate yet so the first search uses the wider INITIAL_SEARCH_RADIUS.
@@ -423,19 +450,41 @@ function sampleBallColor(screenX, screenY) {
   setStatus('Looking for ball…');
 }
 
+function rgbToHsv(r, g, b) {
+  r/=255; g/=255; b/=255;
+  const max=Math.max(r,g,b), min=Math.min(r,g,b), d=max-min;
+  let h=0;
+  if (d!==0) {
+    if (max===r)      h = ((g-b)/d) % 6;
+    else if (max===g) h = (b-r)/d + 2;
+    else               h = (r-g)/d + 4;
+    h /= 6;
+    if (h<0) h += 1;
+  }
+  const s = max===0 ? 0 : d/max;
+  return { h, s, v:max };
+}
+
 // ─────────────────────────────────────────────────
 //  BALL DETECTION — localized connected-component (flood-fill)
 //
 //  Only scans a small window around the ball's last known position, and
 //  only accepts pixels that are actually CONNECTED to each other. A global
-//  color threshold (the old approach) will happily fuse the ball with any
-//  disconnected patch of similar color anywhere in the frame — that's what
-//  was making the detection ring read 7-10x too large, which fed directly
-//  into pxPerFoot and made every speed reading come out far too low.
+//  color threshold bridging to a disconnected patch of similar color
+//  elsewhere in frame was the original cause of a wildly oversized
+//  detection ring; this window+connectivity approach fixed that.
+//
+//  Matching is done in HUE + SATURATION, not RGB Euclidean distance.
+//  Tested offline against real recorded putts: RGB-distance had almost no
+//  safe margin between "too tight to catch the blurred ball" and "loose
+//  enough to swallow the room" (background exploded from a few thousand
+//  matching pixels to over half the frame with only a modest tolerance
+//  increase). Hue+saturation held a clean, connected, stably-shaped blob
+//  through the same motion blur that broke RGB matching — no erosion pass
+//  needed, and no separate still-vs-moving tolerance needed either.
 // ─────────────────────────────────────────────────
-function detectBallLocalized(data, w, h, cx, cy, radius, frameTime, moving) {
-  if (!targetColor) return null;
-  const { r:tr, g:tg, b:tb } = targetColor;
+function detectBallLocalized(data, w, h, cx, cy, radius, frameTime) {
+  if (targetHue===null) return null;
 
   const wx0 = Math.max(0, Math.floor(cx - radius));
   const wy0 = Math.max(0, Math.floor(cy - radius));
@@ -447,51 +496,35 @@ function detectBallLocalized(data, w, h, cx, cy, radius, frameTime, moving) {
   const total = winW * winH;
   if (total > MAX_WIN_TOTAL) return null; // safety guard, shouldn't happen given radius cap
 
-  // While the ball is moving, motion blur smears its color across a wider
-  // band at the edges — a real physical effect, not the same thing as
-  // still-frame anti-aliasing. A stricter match window designed for a sharp
-  // resting ball rejects too much of a blurred one, which is what was
-  // capping accurate readings at low speed: faster putts blur more, so they
-  // got filtered out hardest. Relax the tolerance while tracking motion.
-  const tol = moving ? TOLERANCE * MOTION_TOLERANCE_MULT : TOLERANCE;
-  const tolSq = tol * tol;
   for (let ly=0; ly<winH; ly++) {
     const gy = wy0 + ly;
     const rowBase = ly*winW;
     for (let lx=0; lx<winW; lx++) {
       const gx = wx0 + lx;
       const p = (gy*w + gx) << 2;
-      const dr=data[p]-tr, dg=data[p+1]-tg, db=data[p+2]-tb;
-      matchBuf[rowBase+lx] = (dr*dr+dg*dg+db*db < tolSq) ? 1 : 0;
-    }
-  }
+      const r=data[p], g=data[p+1], b=data[p+2];
 
-  // Erosion only applies to the STILL calibration phase. It strips the
-  // anti-aliased fringe of a sharp resting ball, which is correct there.
-  // But a moving, blurred ball doesn't have that same thin fringe — it has
-  // a genuinely soft, wide edge — and eroding that can shrink or destroy
-  // the blob entirely, which is what was killing detections (and therefore
-  // valid speed samples) specifically on the faster, more-blurred putts.
-  // During motion we skip erosion and flood-fill the raw match mask.
-  let fillBuf;
-  let diamCompensate = 0;
-  if (moving) {
-    fillBuf = matchBuf;
-  } else {
-    for (let ly=0; ly<winH; ly++) {
-      const rowBase = ly*winW;
-      for (let lx=0; lx<winW; lx++) {
-        const idx = rowBase+lx;
-        if (!matchBuf[idx]) { erodeBuf[idx]=0; continue; }
-        const left  = lx>0        ? matchBuf[idx-1]     : 0;
-        const right = lx<winW-1   ? matchBuf[idx+1]     : 0;
-        const up    = ly>0        ? matchBuf[idx-winW]  : 0;
-        const down  = ly<winH-1   ? matchBuf[idx+winW]  : 0;
-        erodeBuf[idx] = (left&&right&&up&&down) ? 1 : 0;
+      // Cheap early-out: background (carpet/wall/skin) is desaturated in
+      // this footage while the ball is vividly colored, so most rejected
+      // pixels get thrown out on saturation alone before hue is computed.
+      const max=Math.max(r,g,b), min=Math.min(r,g,b);
+      const maxN = max/255;
+      const sat = maxN===0 ? 0 : (max-min)/max;
+      let isMatch = false;
+      if (sat >= targetSatMin && maxN >= VAL_MIN) {
+        const d = max-min;
+        let hue;
+        if (max===r)      hue = ((g-b)/d) % 6;
+        else if (max===g) hue = (b-r)/d + 2;
+        else               hue = (r-g)/d + 4;
+        hue /= 6;
+        if (hue<0) hue += 1;
+        let dh = Math.abs(hue - targetHue);
+        if (dh > 0.5) dh = 1 - dh; // circular distance
+        isMatch = dh < HUE_TOL;
       }
+      matchBuf[rowBase+lx] = isMatch ? 1 : 0;
     }
-    fillBuf = erodeBuf;
-    diamCompensate = ERODE_COMPENSATE;
   }
   visitedBuf.fill(0, 0, total);
 
@@ -501,7 +534,7 @@ function detectBallLocalized(data, w, h, cx, cy, radius, frameTime, moving) {
   for (let ly=0; ly<winH; ly++) {
     for (let lx=0; lx<winW; lx++) {
       const idx = ly*winW + lx;
-      if (!fillBuf[idx] || visitedBuf[idx]) continue;
+      if (!matchBuf[idx] || visitedBuf[idx]) continue;
 
       // BFS flood fill from this seed
       let head=0, tail=0;
@@ -517,10 +550,10 @@ function detectBallLocalized(data, w, h, cx, cy, radius, frameTime, moving) {
         if (py<minY) minY=py; if (py>maxY) maxY=py;
 
         // 4-connectivity
-        if (px>0) { const ni=py*winW+(px-1); if (fillBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px-1; qyBuf[tail]=py; tail++; } }
-        if (px<winW-1) { const ni=py*winW+(px+1); if (fillBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px+1; qyBuf[tail]=py; tail++; } }
-        if (py>0) { const ni=(py-1)*winW+px; if (fillBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px; qyBuf[tail]=py-1; tail++; } }
-        if (py<winH-1) { const ni=(py+1)*winW+px; if (fillBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px; qyBuf[tail]=py+1; tail++; } }
+        if (px>0) { const ni=py*winW+(px-1); if (matchBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px-1; qyBuf[tail]=py; tail++; } }
+        if (px<winW-1) { const ni=py*winW+(px+1); if (matchBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px+1; qyBuf[tail]=py; tail++; } }
+        if (py>0) { const ni=(py-1)*winW+px; if (matchBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px; qyBuf[tail]=py-1; tail++; } }
+        if (py<winH-1) { const ni=(py+1)*winW+px; if (matchBuf[ni]&&!visitedBuf[ni]) { visitedBuf[ni]=1; qxBuf[tail]=px; qyBuf[tail]=py+1; tail++; } }
       }
 
       // Reject components too small to trust, or so large they're almost
@@ -534,7 +567,7 @@ function detectBallLocalized(data, w, h, cx, cy, radius, frameTime, moving) {
 
   if (bestCount===0) return null;
 
-  const diam = Math.max(bestMaxX-bestMinX, bestMaxY-bestMinY) + 1 + diamCompensate;
+  const diam = Math.max(bestMaxX-bestMinX, bestMaxY-bestMinY) + 1;
   if (diam<MIN_DIAM || diam>MAX_DIAM) return null;
 
   const gx = wx0 + bestSumX/bestCount;
@@ -690,11 +723,7 @@ function processFrame(frameTime) {
   radius = Math.min(MAX_SEARCH_RADIUS, radius * (1+missStreak*0.5));
   if (missStreak > MAX_MISS_BEFORE_RESET) { radius = MAX_SEARCH_RADIUS; trackDiam = null; trackVX = 0; trackVY = 0; }
 
-  // Only the SCANNING phase expects a still, resting ball (that's when we
-  // calibrate pxPerFoot off a sharp edge). ARMED and MEASURING may involve
-  // real motion blur, so they use the relaxed/no-erosion detection path.
-  const moving = state !== S.SCANNING;
-  const ball = detectBallLocalized(data, canvas.width, canvas.height, predX, predY, radius, frameTime, moving);
+  const ball = detectBallLocalized(data, canvas.width, canvas.height, predX, predY, radius, frameTime);
   if (ball) {
     // Real per-frame velocity, measured from the last CONFIRMED position
     // (not the prediction), so it reflects what the ball actually did.
@@ -774,7 +803,7 @@ function toggleVoice() {
 }
 
 function retap() {
-  targetColor=null; state=S.SETUP;
+  targetHue=null; targetSatMin=null; state=S.SETUP;
   stillCount=0; armBall=null; mFrames=[]; diamHistory=[];
   trackX=null; trackY=null; trackVX=0; trackVY=0; trackDiam=null; missStreak=0;
   tapScreen.classList.remove('hidden');
