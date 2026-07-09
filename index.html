@@ -114,6 +114,7 @@
     .btn.static { cursor:default; }
 
     #status-wrap { display:flex; flex-direction:column; align-items:center; gap:8px; }
+    #status-wrap.hidden { display:none; }
     #status {
       font-size:26px; font-weight:700; letter-spacing:.04em; text-transform:uppercase;
       color:rgba(255,90,90,.9);
@@ -206,7 +207,7 @@
 
 <!-- Tap to identify screen -->
 <div id="tap-screen">
-  <div id="tap-instructions" class="tap-instructions">Place the phone in landscape, parallel with the ball's path, with the ball and putter between yourself and the phone. The ball should be fully visible at the bottom of the screen for best results.</div>
+  <div id="tap-instructions" class="tap-instructions">Place the phone, in landscape, on the floor, parallel to the ball's path. For best results, the camera frame should include both feet. And the ball, placed about a foot from the phone, should be fully visible at the bottom of the screen. When ready for measurement, the app will show a green indicator.</div>
   <div class="tap-title">Tap the ball to calibrate.</div>
 </div>
 
@@ -219,7 +220,7 @@
       <button class="btn on static" id="unit-btn">ft/s</button>
       <button class="btn" onclick="retap()">Recalibrate</button>
     </div>
-    <div id="status-wrap">
+    <div id="status-wrap" class="hidden">
       <div id="status">Looking for ball…</div>
     </div>
   </div>
@@ -326,6 +327,7 @@ const canvas    = document.getElementById('canvas');
 const ctx       = canvas.getContext('2d', { willReadFrequently:true });
 const tapScreen = document.getElementById('tap-screen');
 const tapInstructionsEl = document.getElementById('tap-instructions');
+const statusWrapEl = document.getElementById('status-wrap');
 const cursorEl  = document.getElementById('cursor');
 const statusEl  = document.getElementById('status');
 const dispEl    = document.getElementById('speed-display');
@@ -499,6 +501,7 @@ function sampleBallColor(screenX, screenY) {
 
   // Switch to scanning
   tapScreen.classList.add('hidden');
+  statusWrapEl.classList.remove('hidden');
   hasCalibratedOnce = true;
   tapInstructionsEl.classList.add('hidden');
   state = S.SCANNING;
@@ -864,6 +867,7 @@ function retap() {
   stillCount=0; armBall=null; mFrames=[]; diamHistory=[];
   trackX=null; trackY=null; trackVX=0; trackVY=0; trackDiam=null; missStreak=0;
   tapScreen.classList.remove('hidden');
+  statusWrapEl.classList.add('hidden');
   showRing(null); dispEl.classList.remove('visible');
   clearTimeout(displayTmr);
 }
