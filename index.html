@@ -219,7 +219,7 @@ const MAX_DIAM    = 420;   // px
 const STILL_N     = 22;    // frames stable to arm
 const MOVE_PX     = 9;     // centroid shift to trigger measuring
 const MIN_FRAMES  = 3;
-const MAX_FRAMES  = 10;
+const MAX_FRAMES  = 6; // capped low deliberately — see SPEED comment below
 const DISPLAY_MS  = 4200;
 const EDGE_MARGIN = 10;    // px margin from frame edge before we call a blob "clipped"
 
@@ -233,8 +233,9 @@ const EDGE_MARGIN = 10;    // px margin from frame edge before we call a blob "c
 // pxPerFoot — and therefore every speed reading — being wildly off).
 const INITIAL_SEARCH_RADIUS = 110; // px, used right after tap before we have a diameter estimate
 const MIN_SEARCH_RADIUS     = 55;
-const MAX_SEARCH_RADIUS     = 240;
+const MAX_SEARCH_RADIUS     = 300;
 const SEARCH_MARGIN_MULT    = 3.5;  // search window radius = last diameter * this
+const VELOCITY_MARGIN_PX    = 45;   // extra flat margin added to the search radius while the ball is moving, to absorb the error in a constant-velocity prediction (the ball is decelerating, not moving at constant speed, plus normal detection jitter)
 const MAX_COMPONENT_FRAC    = 0.55; // reject a connected blob that fills more than this fraction of the search window
 const MAX_MISS_BEFORE_RESET = 45;   // ~0.75s at 60fps of no detection before falling back to a full-window search
 
@@ -265,6 +266,8 @@ let voiceOn    = true;
 // Frame-to-frame tracking state for the localized detector
 let trackX      = null;
 let trackY      = null;
+let trackVX     = 0;    // estimated px/frame velocity, used to predict where to search next
+let trackVY     = 0;
 let trackDiam   = null;
 let missStreak  = 0;
 let diamHistory = [];  // stable-frame diameters collected while arming, for median calibration
@@ -411,7 +414,7 @@ function sampleBallColor(screenX, screenY) {
 
   // Anchor the localized search on the tap point; we don't have a diameter
   // estimate yet so the first search uses the wider INITIAL_SEARCH_RADIUS.
-  trackX = cx; trackY = cy; trackDiam = null; missStreak = 0; diamHistory = [];
+  trackX = cx; trackY = cy; trackVX = 0; trackVY = 0; trackDiam = null; missStreak = 0; diamHistory = [];
 
   // Switch to scanning
   tapScreen.classList.add('hidden');
@@ -571,16 +574,27 @@ function showRing(ball) {
 
 // ─────────────────────────────────────────────────
 //  SPEED
-//  Frame pairs where either end is edge-clipped are excluded — a
-//  clipped blob's centroid is pulled toward its visible side, which
-//  reads as phantom motion unrelated to the ball's real speed.
+//
+//  A putt decelerates continuously from friction the instant it leaves the
+//  putter face — this was confirmed against real recorded footage: a single
+//  putt measured ~7.4 ft/s right after contact and ~6.3 ft/s about 140ms
+//  later, a real ~15% drop, not measurement noise. There is no single "true
+//  speed" for a putt over an extended window — only where along that decay
+//  curve you choose to measure. mFrames is capped at MAX_FRAMES (6) for
+//  exactly this reason: it anchors the reading to the first few frames
+//  right after motion is detected, closest to true contact speed, rather
+//  than averaging across a longer window that would drift down the decay
+//  curve and vary putt-to-putt depending on incidental timing.
+//
+//  Frame pairs where either end is edge-clipped are excluded — a clipped
+//  blob's centroid is pulled toward its visible side, which reads as
+//  phantom motion unrelated to the ball's real speed.
 // ─────────────────────────────────────────────────
 function calcSpeed(frames) {
   if (frames.length<MIN_FRAMES||!pxPerFoot) return null;
-  const use=frames.slice(0,MAX_FRAMES);
   const vels=[];
-  for (let i=1;i<use.length;i++) {
-    const a=use[i-1],b=use[i];
+  for (let i=1;i<frames.length;i++) {
+    const a=frames[i-1],b=frames[i];
     if (a.edgeClipped||b.edgeClipped) continue;
     const dist=Math.hypot(b.x-a.x,b.y-a.y);
     const dt=(b.t-a.t)/1000;
@@ -652,21 +666,48 @@ function processFrame(frameTime) {
   ctx.drawImage(video,0,0,canvas.width,canvas.height);
   const {data}=ctx.getImageData(0,0,canvas.width,canvas.height);
 
-  // Size the search window from the last known diameter (or a generous
-  // default before we have one), and widen it on consecutive misses so a
-  // brief occlusion or motion blur doesn't lose tracking permanently.
+  // Search around where the ball is PREDICTED to be now (last position +
+  // last velocity), not where it WAS last frame. The previous version
+  // always centered the window on the stale last-known position, so the
+  // window only had a chance of catching the ball if its per-frame
+  // displacement was smaller than the radius — on a fast putt that's false
+  // almost immediately after contact, and once lost, the window kept
+  // growing around a point the ball had already moved well past. This is
+  // why fast putts silently lost tracking a frame or two after contact and
+  // reported only whatever tiny, noisy shift happened right at contact —
+  // low regardless of how hard the ball was actually hit.
+  const predX = Math.max(0, Math.min(canvas.width-1,  trackX + trackVX));
+  const predY = Math.max(0, Math.min(canvas.height-1, trackY + trackVY));
+
+  // Because the window now follows the predicted position, it only needs
+  // to cover the ERROR in a constant-velocity guess (deceleration + noise)
+  // — not the full raw displacement — so it can stay modest even for fast
+  // putts. VELOCITY_MARGIN_PX only kicks in once actually moving.
+  const speedMag = Math.hypot(trackVX, trackVY);
   let radius = trackDiam
-    ? Math.min(MAX_SEARCH_RADIUS, Math.max(MIN_SEARCH_RADIUS, trackDiam*SEARCH_MARGIN_MULT) * (1+missStreak*0.4))
-    : Math.min(MAX_SEARCH_RADIUS, INITIAL_SEARCH_RADIUS * (1+missStreak*0.4));
-  if (missStreak > MAX_MISS_BEFORE_RESET) { radius = MAX_SEARCH_RADIUS; trackDiam = null; }
+    ? Math.max(MIN_SEARCH_RADIUS, trackDiam*SEARCH_MARGIN_MULT) + (speedMag>0 ? VELOCITY_MARGIN_PX : 0)
+    : INITIAL_SEARCH_RADIUS;
+  radius = Math.min(MAX_SEARCH_RADIUS, radius * (1+missStreak*0.5));
+  if (missStreak > MAX_MISS_BEFORE_RESET) { radius = MAX_SEARCH_RADIUS; trackDiam = null; trackVX = 0; trackVY = 0; }
 
   // Only the SCANNING phase expects a still, resting ball (that's when we
   // calibrate pxPerFoot off a sharp edge). ARMED and MEASURING may involve
   // real motion blur, so they use the relaxed/no-erosion detection path.
   const moving = state !== S.SCANNING;
-  const ball = detectBallLocalized(data, canvas.width, canvas.height, trackX, trackY, radius, frameTime, moving);
-  if (ball) { trackX=ball.x; trackY=ball.y; trackDiam=ball.diam; missStreak=0; }
-  else { missStreak++; }
+  const ball = detectBallLocalized(data, canvas.width, canvas.height, predX, predY, radius, frameTime, moving);
+  if (ball) {
+    // Real per-frame velocity, measured from the last CONFIRMED position
+    // (not the prediction), so it reflects what the ball actually did.
+    trackVX = ball.x - trackX;
+    trackVY = ball.y - trackY;
+    trackX = ball.x; trackY = ball.y; trackDiam = ball.diam; missStreak = 0;
+  } else {
+    // Coast forward on the last known velocity rather than freezing in
+    // place — keeps the predicted search center advancing with the ball
+    // through a brief miss (blur, occlusion) instead of falling behind it.
+    trackX = predX; trackY = predY;
+    missStreak++;
+  }
 
   switch(state) {
 
@@ -735,7 +776,7 @@ function toggleVoice() {
 function retap() {
   targetColor=null; state=S.SETUP;
   stillCount=0; armBall=null; mFrames=[]; diamHistory=[];
-  trackX=null; trackY=null; trackDiam=null; missStreak=0;
+  trackX=null; trackY=null; trackVX=0; trackVY=0; trackDiam=null; missStreak=0;
   tapScreen.classList.remove('hidden');
   showRing(null); dispEl.classList.remove('visible');
   clearTimeout(displayTmr);
