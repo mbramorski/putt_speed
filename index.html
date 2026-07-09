@@ -26,28 +26,47 @@
       position:absolute; inset:0; z-index:20;
       display:flex; flex-direction:column;
       align-items:center; justify-content:center;
-      gap:20px;
+      gap:22px;
       background:rgba(0,0,0,0.55);
-      cursor:crosshair;
     }
     #tap-screen.hidden { display:none; }
-    .tap-icon {
-      width:64px; height:64px;
-      border:2.5px solid rgba(255,218,0,0.85);
-      border-radius:50%;
-      display:flex; align-items:center; justify-content:center;
+    .tap-instructions {
+      font-size:15px; color:rgba(255,255,255,0.7);
+      text-align:center; max-width:420px; line-height:1.6;
     }
-    .tap-icon::after {
-      content:''; width:8px; height:8px;
-      background:rgba(255,218,0,0.9); border-radius:50%;
-    }
+    .tap-instructions.hidden { display:none; }
     .tap-title {
       font-size:20px; font-weight:600;
       color:#fff; letter-spacing:-.01em;
+      text-align:center;
     }
-    .tap-sub {
-      font-size:13px; color:rgba(255,255,255,0.45);
-      text-align:center; max-width:240px; line-height:1.6;
+
+    /* ── portrait-only intro screen ── */
+    #portrait-intro {
+      position:fixed; inset:0; z-index:999;
+      display:flex; flex-direction:column;
+      align-items:center; justify-content:center;
+      gap:20px; padding:48px; text-align:center;
+      background:#000; color:#fff;
+    }
+    #portrait-intro h1 {
+      font-size:22px; font-weight:700; letter-spacing:.14em;
+    }
+    #portrait-intro p {
+      font-size:15px; color:rgba(255,255,255,.65);
+      line-height:1.6; max-width:320px;
+    }
+    #portrait-intro .rotate-hint {
+      font-size:14px; font-weight:600; color:rgba(255,205,60,.9);
+    }
+    @media (orientation:landscape) {
+      #portrait-intro { display:none; }
+    }
+
+    #version-label {
+      position:absolute; top:6px; left:8px; z-index:15;
+      font-size:10px; color:#000;
+      pointer-events:none;
     }
 
     /* ── crosshair cursor follows finger ── */
@@ -95,16 +114,15 @@
     .btn.static { cursor:default; }
 
     #status-wrap { display:flex; flex-direction:column; align-items:center; gap:8px; }
-    #app-label { font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:rgba(255,255,255,.28); }
     #status {
-      font-size:12px; letter-spacing:.1em; text-transform:uppercase;
-      color:rgba(255,90,90,.85);
+      font-size:26px; font-weight:700; letter-spacing:.04em; text-transform:uppercase;
+      color:rgba(255,90,90,.9);
       background:rgba(0,0,0,.45);
-      padding:7px 20px; border-radius:30px;
-      border:1px solid rgba(255,90,90,.4);
+      padding:12px 28px; border-radius:16px;
+      border:2px solid rgba(255,90,90,.5);
       transition:color .2s, border-color .2s;
     }
-    #status.found   { color:rgba(70,220,120,.95); border-color:rgba(70,220,120,.5); }
+    #status.found   { color:rgba(255,205,60,.95); border-color:rgba(255,205,60,.55); }
     #status.ready   { color:rgba(70,220,120,1);   border-color:rgba(70,220,120,.75); }
     #status.reading { color:#fff;                 border-color:rgba(70,220,120,.9); }
 
@@ -130,11 +148,11 @@
     /* ── ball ring ── */
     #ring {
       position:absolute;
-      border:3px solid rgba(255,90,90,.9);
+      border:3px solid rgba(255,205,60,.9);
       border-radius:50%;
       transform:translate(-50%,-50%);
       pointer-events:none; display:none;
-      box-shadow:0 0 0 1px rgba(0,0,0,.4), 0 0 16px rgba(255,90,90,.5);
+      box-shadow:0 0 0 1px rgba(0,0,0,.4), 0 0 16px rgba(255,205,60,.5);
       transition:border-color .15s, box-shadow .15s;
     }
     #ring.locked {
@@ -174,15 +192,22 @@
 </head>
 <body>
 
+<div id="version-label">v1</div>
+
+<div id="portrait-intro">
+  <h1>PUTT SPEED</h1>
+  <p>An app for elevating at-home putting practice effectiveness by measuring putt speed.</p>
+  <p class="rotate-hint">Turn your phone to landscape mode for further instructions.</p>
+</div>
+
 <video id="video" playsinline autoplay muted></video>
 <canvas id="canvas"></canvas>
 <div id="cursor"></div>
 
 <!-- Tap to identify screen -->
 <div id="tap-screen">
-  <div class="tap-icon"></div>
-  <div class="tap-title">Tap the ball</div>
-  <div class="tap-sub">Touch the ball in the camera view to lock it in</div>
+  <div id="tap-instructions" class="tap-instructions">Place the phone in landscape, parallel with the ball's path, with the ball and putter between yourself and the phone. The ball should be fully visible at the bottom of the screen for best results.</div>
+  <div class="tap-title">Tap the ball to calibrate.</div>
 </div>
 
 <div id="ring"></div>
@@ -192,10 +217,9 @@
     <div id="controls">
       <button class="btn on" id="voice-btn" onclick="toggleVoice()">Voice On</button>
       <button class="btn on static" id="unit-btn">ft/s</button>
-      <button class="btn" onclick="retap()">Re-tap Ball</button>
+      <button class="btn" onclick="retap()">Recalibrate</button>
     </div>
     <div id="status-wrap">
-      <div id="app-label">Putt Speed</div>
       <div id="status">Looking for ball…</div>
     </div>
   </div>
@@ -282,6 +306,7 @@ let pxPerFoot  = null;
 let displayTmr = null;
 let lastSpeed  = null;
 let voiceOn    = true;
+let hasCalibratedOnce = false; // first tap shows full placement instructions; Recalibrate afterward shows just the prompt
 
 // Frame-to-frame tracking state for the localized detector
 let trackX      = null;
@@ -300,6 +325,7 @@ const video     = document.getElementById('video');
 const canvas    = document.getElementById('canvas');
 const ctx       = canvas.getContext('2d', { willReadFrequently:true });
 const tapScreen = document.getElementById('tap-screen');
+const tapInstructionsEl = document.getElementById('tap-instructions');
 const cursorEl  = document.getElementById('cursor');
 const statusEl  = document.getElementById('status');
 const dispEl    = document.getElementById('speed-display');
@@ -473,6 +499,8 @@ function sampleBallColor(screenX, screenY) {
 
   // Switch to scanning
   tapScreen.classList.add('hidden');
+  hasCalibratedOnce = true;
+  tapInstructionsEl.classList.add('hidden');
   state = S.SCANNING;
   stillCount = 0; armBall = null;
   setStatus('Looking for ball…');
